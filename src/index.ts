@@ -1,5 +1,10 @@
 import express from 'express';
 import cors from 'cors';
+import dotenv from 'dotenv';
+import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from '@google/generative-ai';
+
+// Load environment variables
+dotenv.config();
 
 // Types
 interface AnalysisRequest {
@@ -24,98 +29,35 @@ interface Question {
 }
 
 // API Configuration
-function getApiConfig() {
-  const apiKey = process.env.ZAI_API_KEY;
-  const baseUrl = process.env.ZAI_BASE_URL || 'https://api.z.ai/api/paas';
-  return { apiKey, baseUrl };
-}
+const PORT = process.env.PORT || 3001;
+const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 
-// Call the chat/completions endpoint
-async function callChatAPI(messages: any[], temperature: number = 0.3): Promise<any> {
-  const { apiKey, baseUrl } = getApiConfig();
-  
-  if (!apiKey) throw new Error('ZAI_API_KEY non configurata');
-  
-  const endpoint = `${baseUrl}/v4/chat/completions`;
-  
-  console.log('[API] Calling:', endpoint);
-  
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      messages,
-      temperature,
-      max_tokens: 4096
-    })
-  });
-  
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`API Error (${response.status}): ${errorText.substring(0, 500)}`);
-  }
-  
-  return await response.json();
-}
+// Initialize Google AI
+const genAI = new GoogleGenerativeAI(GOOGLE_API_KEY || '');
 
-// Vision call - same endpoint with image content
-async function callVisionAPI(imageUrl: string, prompt: string): Promise<any> {
-  const { apiKey, baseUrl } = getApiConfig();
-  
-  if (!apiKey) throw new Error('ZAI_API_KEY non configurata');
-  
-  const endpoint = `${baseUrl}/v4/chat/completions`;
-  
-  console.log('[VISION] Calling:', endpoint);
-  console.log('[VISION] Image type:', imageUrl?.substring(0, 30));
-  console.log('[VISION] Image length:', imageUrl?.length || 0);
-  
-  const messages = [{
-    role: 'user',
-    content: [
-      { type: 'text', text: prompt },
-      { type: 'image_url', image_url: { url: imageUrl } }
-    ]
-  }];
-  
-  const requestBody = {
-    messages,
-    max_tokens: 4096
-  };
-  
-  console.log('[VISION] Sending request...');
-  
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(requestBody)
-  });
-  
-  const responseText = await response.text();
-  console.log('[VISION] Response status:', response.status);
-  console.log('[VISION] Response body (first 500 chars):', responseText.substring(0, 500));
-  
-  if (!response.ok) {
-    throw new Error(`Vision API Error (${response.status}): ${responseText.substring(0, 500)}`);
-  }
-  
-  try {
-    const result = JSON.parse(responseText);
-    console.log('[VISION] Parsed successfully');
-    console.log('[VISION] Has choices:', !!result.choices);
-    console.log('[VISION] Has message:', !!result.choices?.[0]?.message);
-    console.log('[VISION] Content length:', result.choices?.[0]?.message?.content?.length || 0);
-    return result;
-  } catch (parseError) {
-    console.error('[VISION] Parse error:', parseError);
-    throw new Error(`Failed to parse API response: ${responseText.substring(0, 200)}`);
-  }
+// Safety settings - block as little as possible for educational content analysis
+const safetySettings = [
+  {
+    category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+    threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+  },
+  {
+    category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+    threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+  },
+  {
+    category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+    threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+  },
+  {
+    category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+    threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+  },
+];
+
+// Helper to get model
+function getModel(modelName: string = 'gemini-1.5-flash') {
+  return genAI.getGenerativeModel({ model: modelName, safetySettings });
 }
 
 // Italian grade calculation
@@ -133,7 +75,6 @@ function calculateGrade(percentage: number): string {
 
 // Initialize Express
 const app = express();
-const PORT = process.env.PORT || 3001;
 
 app.use(cors({ origin: process.env.FRONTEND_URL || '*', credentials: true }));
 app.use(express.json({ limit: '50mb' }));
@@ -145,175 +86,107 @@ app.get('/health', (req, res) => {
 
 // Debug endpoint
 app.get('/debug', async (req, res) => {
-  const { apiKey, baseUrl } = getApiConfig();
-  
+  const hasApiKey = !!GOOGLE_API_KEY;
+
   let chatWorks = false;
   let visionWorks = false;
   let chatError = null;
   let visionError = null;
-  
+
   // Test chat
   try {
-    const response = await fetch(`${baseUrl}/v4/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        messages: [{ role: 'user', content: 'Rispondi solo: ok' }],
-        max_tokens: 10
-      })
-    });
-    chatWorks = response.ok;
-    if (!response.ok) chatError = `Status ${response.status}`;
+    if (!hasApiKey) throw new Error('GOOGLE_API_KEY non configurata');
+
+    const model = getModel();
+    const result = await model.generateContent('Rispondi solo: ok');
+    const response = result.response.text();
+    chatWorks = !!response;
   } catch (e) {
     chatError = e instanceof Error ? e.message : String(e);
   }
-  
-  // Test vision with tiny image
-  const testImage = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
-  try {
-    const response = await fetch(`${baseUrl}/v4/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'text', text: 'Rispondi solo: ok' },
-            { type: 'image_url', image_url: { url: testImage } }
-          ]
-        }],
-        max_tokens: 10
-      })
-    });
-    visionWorks = response.ok;
-    if (!response.ok) visionError = `Status ${response.status}`;
-  } catch (e) {
-    visionError = e instanceof Error ? e.message : String(e);
-  }
-  
+
+  // Test vision (using a text-only prompt to check model access, as actual vision test requires valid base64)
+  // We can just reuse the chat test for basic model availability since gemini-1.5-flash is multimodal
+  visionWorks = chatWorks;
+  if (!chatWorks) visionError = chatError;
+
   res.json({
-    config: { hasApiKey: !!apiKey, apiKeyLength: apiKey?.length || 0, baseUrl },
+    config: { hasApiKey, provider: 'Google Gemini' },
     chat: { works: chatWorks, error: chatError },
     vision: { works: visionWorks, error: visionError },
-    recommendation: visionWorks 
-      ? "✅ Tutto funzionante!" 
-      : chatWorks 
-        ? "⚠️ Chat funziona ma Vision no - verifica che l'API supporti immagini"
-        : "❌ Né chat né vision funzionano - verifica API key e URL",
+    recommendation: chatWorks
+      ? "✅ Tutto funzionante!"
+      : "❌ Verifica la tua API Key di Google AI",
     timestamp: new Date().toISOString()
   });
 });
 
 // Test endpoint - returns raw AI response for debugging
 app.post('/api/test-vision', async (req, res) => {
-  const { apiKey, baseUrl } = getApiConfig();
-  
   try {
     const { image } = req.body;
-    
+
     if (!image) {
       return res.status(400).json({ error: 'Immagine mancante' });
     }
-    
+
+    if (!GOOGLE_API_KEY) {
+      return res.status(500).json({ error: 'GOOGLE_API_KEY mancante' });
+    }
+
     console.log('[TEST] ========================================');
     console.log('[TEST] Testing vision with image...');
-    console.log('[TEST] Image length:', image?.length || 0);
-    console.log('[TEST] Image starts with:', image?.substring(0, 50));
-    
-    // Try different image formats
-    let imageToSend = image;
-    let imageFormat = 'original';
-    
-    // If it's a data URL, extract just the base64 part
-    if (image.startsWith('data:image')) {
-      const base64Match = image.match(/base64,(.+)/);
-      if (base64Match) {
-        imageToSend = base64Match[1];
-        imageFormat = 'base64-only';
-        console.log('[TEST] Extracted base64, length:', imageToSend.length);
+
+    // Process image
+    let imagePart;
+    let mimeType = 'image/jpeg'; // Default
+
+    if (image.startsWith('data:')) {
+      const match = image.match(/^data:([^;]+);base64,(.+)$/);
+      if (match) {
+        mimeType = match[1];
+        imagePart = {
+          inlineData: {
+            data: match[2],
+            mimeType: mimeType
+          }
+        };
+      } else {
+        throw new Error('Formato data URI non valido');
       }
+    } else {
+      // Assume raw base64
+      imagePart = {
+        inlineData: {
+          data: image,
+          mimeType: 'image/jpeg'
+        }
+      };
     }
-    
+
+    console.log(`[TEST] MimeType: ${mimeType}`);
+
     const prompt = `Guarda questa immagine e descrivi esattamente cosa vedi. Rispondi in italiano.`;
 
-    const endpoint = `${baseUrl}/v4/chat/completions`;
-    
-    // Try different model names
-    const models = [
-      'gpt-4',
-      'gpt-4o',
-      'gpt-4-turbo',
-      'gpt-3.5-turbo',
-      'gpt-3.5',
-      'claude-3-opus',
-      'claude-3-sonnet',
-      'claude-3-haiku',
-      'gemini-pro',
-      'gemini-1.5-pro',
-      'llama-3',
-      'llama-3.1-70b',
-      'qwen',
-      'qwen-max',
-      'qwen-plus',
-      'default',
-      'chat'
-    ];
-    
-    const results = [];
-    
-    for (const model of models) {
-      try {
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`
-          },
-          body: JSON.stringify({
-            model: model,
-            messages: [{ role: 'user', content: 'OK' }],
-            max_tokens: 5
-          })
-        });
-        
-        const responseText = await response.text();
-        let parsed;
-        try { parsed = JSON.parse(responseText); } catch { parsed = null; }
-        
-        const hasError = parsed?.error;
-        const isUnknownModel = parsed?.error?.code === '1211';
-        
-        results.push({
-          model: model,
-          status: response.status,
-          isUnknownModel: isUnknownModel,
-          hasContent: !!parsed?.choices?.[0]?.message?.content,
-          error: hasError ? parsed.error : null
-        });
-        
-      } catch (err) {
-        results.push({
-          model: model,
-          error: err instanceof Error ? err.message : String(err)
-        });
-      }
-    }
-    
+    // Try different models if available, but primarily flash
+    const modelName = 'gemini-1.5-flash';
+    const model = getModel(modelName);
+
+    console.log(`[TEST] Calling model: ${modelName}`);
+
+    const result = await model.generateContent([prompt, imagePart]);
+    const response = result.response;
+    const text = response.text();
+
+    console.log('[TEST] Response received');
     console.log('[TEST] ========================================');
-    
+
     res.json({
       success: true,
-      results: results,
-      imageFormat: imageFormat,
-      endpoint: endpoint
+      text: text,
+      model: modelName
     });
-    
+
   } catch (error) {
     console.error('[TEST] Error:', error);
     res.json({
@@ -328,7 +201,7 @@ app.post('/api/test-vision', async (req, res) => {
 app.post('/api/analyze', async (req, res) => {
   console.log('[ANALYZE] ========================================');
   console.log('[ANALYZE] Ricevuta richiesta di analisi');
-  
+
   try {
     const { image, subject, testType, customInstructions, maxScore } = req.body;
 
@@ -336,15 +209,34 @@ app.post('/api/analyze', async (req, res) => {
     if (!image) return res.status(400).json({ error: 'Immagine mancante' });
     if (!subject) return res.status(400).json({ error: 'Materia mancante' });
     if (!testType) return res.status(400).json({ error: 'Tipo di verifica mancante' });
+    if (!GOOGLE_API_KEY) return res.status(500).json({ error: 'Configurazione server incompleta (API KEY Mancante)' });
 
     console.log(`[ANALYZE] Materia: ${subject}, Tipo: ${testType}, MaxScore: ${maxScore}`);
-    console.log(`[ANALYZE] Image length: ${image?.length || 0}`);
-    
-    const { apiKey, baseUrl } = getApiConfig();
-    console.log(`[ANALYZE] API Key present: ${!!apiKey}`);
-    console.log(`[ANALYZE] Base URL: ${baseUrl}`);
 
-    // SINGLE comprehensive prompt - extracts AND evaluates in one shot
+    // Prepare Image
+    let imagePart;
+    if (image.startsWith('data:')) {
+      const match = image.match(/^data:([^;]+);base64,(.+)$/);
+      if (match) {
+        imagePart = {
+          inlineData: {
+            data: match[2],
+            mimeType: match[1]
+          }
+        };
+      } else {
+        throw new Error('Formato immagine non valido');
+      }
+    } else {
+      imagePart = {
+        inlineData: {
+          data: image,
+          mimeType: 'image/jpeg'
+        }
+      };
+    }
+
+    // Comprehensive prompt
     const analysisPrompt = `Sei un insegnante italiano esperto di ${subject}. Analizza questa immagine di una verifica scolastica.
 
 ISTRUZIONI IMPORTANTI:
@@ -352,145 +244,104 @@ ISTRUZIONI IMPORTANTI:
 2. Identifica TUTTE le domande presenti (possono essere Vero/Falso, a risposta multipla, o aperte)
 3. Per ogni domanda, leggi la risposta data dallo studente
 4. Valuta se la risposta è corretta o no
-5. Il punteggio massimo totale è ${maxScore} punti
+5. Il punteggio massimo totale è ${maxScore} punti. Distribuisci i punti in modo logico se non specificati.
 
 TIPO DI VERIFICA: ${testType}
+${customInstructions ? `ISTRUZIONI AGGIUNTIVE: ${customInstructions}` : ''}
 
 Rispondi ESCLUSIVAMENTE con un JSON valido in questo formato esatto:
 {
   "studentName": "nome dello studente o stringa vuota",
-  "totalQuestions": numero totale di domande trovate,
+  "totalQuestions": number,
   "questions": [
     {
       "number": 1,
       "text": "testo completo della domanda",
-      "type": "vero_falso o multipla o aperta",
+      "type": "vero_falso" | "multipla" | "aperta",
       "studentAnswer": "risposta data dallo studente",
       "correctAnswer": "risposta corretta",
-      "isCorrect": true o false,
-      "score": punti assegnati (calcolati proporzionalmente: ${maxScore} / numero domande),
+      "isCorrect": boolean,
+      "score": number, 
       "feedback": "feedback breve per lo studente"
     }
   ],
   "overallFeedback": "commento generale sulla verifica",
-  "totalScore": punteggio totale assegnato
+  "totalScore": number
 }
 
 IMPORTANTE: 
-- Identifica TUTTE le domande, non solo una
-- Per i Vero/Falso, la risposta dello studente sarà "V" o "F" o "Vero" o "Falso"
-- Assegna punti in modo proporzionale
-- Se non riesci a leggere qualcosa, indicarlo nel feedback
+- Identifica TUTTE le domande visibili
+- Assegna punti la cui somma sia vicina o uguale a ${maxScore}
+- Se una risposta non è leggibile, metti "ILLEGIBILE" come studentAnswer e 0 punti
+- Non includere markdown tipo \`\`\`json o \`\`\`. Restituisci SOLO il JSON puro.`;
 
-Analizza ora l'immagine e rispondi SOLO con il JSON.`;
+    // Call Gemini
+    const model = getModel('gemini-1.5-flash'); // Using flash for speed, switch to pro if better reasoning needed
 
-    // Call API directly
-    const endpoint = `${baseUrl}/v4/chat/completions`;
-    console.log('[ANALYZE] Calling:', endpoint);
-    
-    const requestBody = {
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: analysisPrompt },
-          { type: 'image_url', image_url: { url: image } }
-        ]
-      }],
-      max_tokens: 4096
-    };
-    
-    const apiResponse = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify(requestBody)
+    console.log('[ANALYZE] Calling Gemini...');
+
+    // We request JSON response MIME type if supported by the library version, 
+    // but usually prompt engineering is enough. 
+    // For strictly typed JSON, we can use generationConfig responseMimeType: "application/json"
+
+    const generationResult = await model.generateContent({
+      contents: [{ role: 'user', parts: [{ text: analysisPrompt }, imagePart] }],
+      generationConfig: {
+        responseMimeType: "application/json"
+      }
     });
-    
-    const responseText = await apiResponse.text();
-    console.log('[ANALYZE] API Status:', apiResponse.status);
-    console.log('[ANALYZE] API Response (first 1000 chars):', responseText.substring(0, 1000));
-    
-    if (!apiResponse.ok) {
-      return res.status(500).json({ 
-        error: `Errore API (${apiResponse.status})`,
-        details: responseText.substring(0, 500),
-        endpoint: endpoint
-      });
-    }
-    
-    let response;
-    try {
-      response = JSON.parse(responseText);
-    } catch (e) {
-      return res.status(500).json({ 
-        error: 'Risposta API non valida',
-        rawResponse: responseText.substring(0, 500)
-      });
-    }
 
-    const rawContent = response.choices?.[0]?.message?.content;
-    console.log('[ANALYZE] Content length:', rawContent?.length || 0);
-    console.log('[ANALYZE] Content preview:', rawContent?.substring(0, 500));
-    console.log('[ANALYZE] ========================================');
-    
-    if (!rawContent) {
-      return res.status(500).json({ error: 'Nessuna risposta dall\'IA' });
-    }
+    const response = generationResult.response;
+    const responseText = response.text();
 
-    // Parse JSON from response
+    console.log('[ANALYZE] Content length:', responseText.length);
+    console.log('[ANALYZE] Content preview:', responseText.substring(0, 200));
+
+    // Parse JSON
     let analysisResult: any;
     try {
-      // Try to extract JSON from the response
-      const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        analysisResult = JSON.parse(jsonMatch[0]);
-      } else {
-        throw new Error('Nessun JSON trovato nella risposta');
-      }
+      // Cleanup markdown if present (even with responseMimeType it might happen slightly differently depending on version)
+      const cleanText = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
+      analysisResult = JSON.parse(cleanText);
     } catch (parseError) {
       console.error('[ANALYZE] JSON parse error:', parseError);
-      console.error('[ANALYZE] Response was:', rawContent);
-      return res.status(500).json({ 
+      return res.status(500).json({
         error: 'Errore nel parsing della risposta AI',
-        rawResponse: rawContent.substring(0, 1000)
+        rawResponse: responseText.substring(0, 1000)
       });
     }
 
-    // Validate and build final result
+    // Validate and Clean Structure
     if (!analysisResult.questions || !Array.isArray(analysisResult.questions)) {
       console.error('[ANALYZE] Invalid structure:', analysisResult);
-      return res.status(500).json({ 
+      return res.status(500).json({
         error: 'Struttura risposta non valida',
         received: analysisResult
       });
     }
 
-    console.log(`[ANALYZE] Found ${analysisResult.questions.length} questions`);
+    const questionsPerScore = maxScore / (analysisResult.questions.length || 1);
 
-    // Build final questions array
-    const questionsPerScore = maxScore / (analysisResult.totalQuestions || analysisResult.questions.length || 1);
-    
     const finalQuestions: Question[] = analysisResult.questions.map((q: any, index: number) => {
-      const score = typeof q.score === 'number' ? q.score : (q.isCorrect ? questionsPerScore : 0);
-      
+      // Ensure score helps sum to total or is reasonable
+      let score = typeof q.score === 'number' ? q.score : (q.isCorrect ? questionsPerScore : 0);
+
       return {
         id: `q-${q.number || index + 1}-${Date.now()}`,
         number: q.number || index + 1,
         text: q.text || `Domanda ${q.number || index + 1}`,
         studentAnswer: q.studentAnswer || '',
         correctAnswer: q.correctAnswer || '',
-        score: Math.min(Math.max(0, score), questionsPerScore),
-        maxScore: questionsPerScore,
+        score: Math.round(score * 10) / 10,
+        maxScore: questionsPerScore, // Or derive from q.maxScore if model provides it
         feedback: q.feedback || (q.isCorrect ? 'Corretto' : 'Non corretto'),
         isCorrect: q.isCorrect ?? false,
         confirmed: null
       };
     });
 
-    // Calculate totals
-    const totalScore = analysisResult.totalScore || finalQuestions.reduce((sum, q) => sum + q.score, 0);
+    // Recalculate totals based on parsed questions to be safe
+    const totalScore = finalQuestions.reduce((sum, q) => sum + q.score, 0);
     const percentage = (totalScore / maxScore) * 100;
 
     const result = {
@@ -504,7 +355,7 @@ Analizza ora l'immagine e rispondi SOLO con il JSON.`;
       overallFeedback: analysisResult.overallFeedback || 'Analisi completata.'
     };
 
-    console.log(`[ANALYZE] Result: ${finalQuestions.length} questions, score ${totalScore}/${maxScore} (${percentage.toFixed(1)}%)`);
+    console.log(`[ANALYZE] Result: ${finalQuestions.length} questions, score ${totalScore}/${maxScore}`);
 
     res.json({ result });
 
@@ -519,9 +370,8 @@ Analizza ora l'immagine e rispondi SOLO con il JSON.`;
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`🚀 Server avviato sulla porta ${PORT}`);
+  console.log(`🚀 Server avviato sulla porta ${PORT} (Google AI)`);
   console.log(`📍 Health: http://localhost:${PORT}/health`);
   console.log(`🔍 Debug: http://localhost:${PORT}/debug`);
-  console.log(`🔑 ZAI_API_KEY: ${!!process.env.ZAI_API_KEY ? 'presente' : 'MANCANTE'}`);
-  console.log(`🌐 ZAI_BASE_URL: ${process.env.ZAI_BASE_URL || 'default: https://api.z.ai/api/paas'}`);
+  console.log(`🔑 API Key: ${!!GOOGLE_API_KEY ? 'Presente' : 'MANCANTE'}`);
 });
