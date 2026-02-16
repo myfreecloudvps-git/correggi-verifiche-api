@@ -37,6 +37,7 @@ function getApiConfig() {
 }
 
 // Direct HTTP call to chat completions API
+// Based on /debug results: ONLY /v4/chat/completions works!
 async function callChatAPI(messages: any[], temperature: number = 0.7): Promise<any> {
   const { apiKey, baseUrl } = getApiConfig();
   
@@ -44,13 +45,10 @@ async function callChatAPI(messages: any[], temperature: number = 0.7): Promise<
     throw new Error('ZAI_API_KEY non configurata');
   }
   
-  // Build the full URL - try different endpoints
-  const endpoints = [
-    `${baseUrl}/chat/completions`,
-    `${baseUrl}/v4/chat/completions`,
-  ];
+  // Use the working endpoint directly
+  const endpoint = `${baseUrl}/v4/chat/completions`;
   
-  console.log('[API] Tentativo chiamata chat...');
+  console.log('[API] Chiamata chat a:', endpoint);
   
   const requestBody = {
     messages,
@@ -58,46 +56,25 @@ async function callChatAPI(messages: any[], temperature: number = 0.7): Promise<
     max_tokens: 4096
   };
   
-  for (const endpoint of endpoints) {
-    console.log('[API] Provando endpoint:', endpoint);
-    
-    try {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify(requestBody)
-      });
-      
-      if (response.ok) {
-        console.log('[API] ✓ Endpoint funzionante:', endpoint);
-        return await response.json();
-      } else if (response.status === 401) {
-        const errorText = await response.text();
-        console.log('[API] ✗ Auth error (endpoint esiste):', endpoint);
-        throw new Error(`Errore autenticazione: ${errorText}`);
-      } else if (response.status === 404) {
-        console.log('[API] ✗ Endpoint non trovato:', endpoint);
-        continue;
-      } else {
-        console.log('[API] ✗ Errore:', response.status, endpoint);
-        continue;
-      }
-    } catch (error) {
-      if (error instanceof Error && error.message.includes('autenticazione')) {
-        throw error;
-      }
-      console.log('[API] ✗ Errore connessione:', endpoint, error);
-      continue;
-    }
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify(requestBody)
+  });
+  
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Errore API (${response.status}): ${errorText.substring(0, 500)}`);
   }
   
-  throw new Error('Nessun endpoint disponibile. Verifica ZAI_BASE_URL');
+  return await response.json();
 }
 
-// Direct HTTP call for vision - sends image with chat completion
+// Vision API - uses the same /v4/chat/completions endpoint with multimodal messages
+// Many APIs support images in the standard chat endpoint
 async function callVisionAPI(imageUrl: string, prompt: string): Promise<any> {
   const { apiKey, baseUrl } = getApiConfig();
   
@@ -105,7 +82,12 @@ async function callVisionAPI(imageUrl: string, prompt: string): Promise<any> {
     throw new Error('ZAI_API_KEY non configurata');
   }
   
-  // Build message with image
+  // Use the working endpoint - same as chat but with image content
+  const endpoint = `${baseUrl}/v4/chat/completions`;
+  
+  console.log('[VISION] Chiamata vision a:', endpoint);
+  
+  // Build multimodal message with image
   const messages = [{
     role: 'user',
     content: [
@@ -114,59 +96,31 @@ async function callVisionAPI(imageUrl: string, prompt: string): Promise<any> {
     ]
   }];
   
-  // Try different endpoint variations
-  const endpoints = [
-    `${baseUrl}/chat/completions`,
-    `${baseUrl}/v4/chat/completions`,
-    `${baseUrl}/chat/completions/vision`,
-    `${baseUrl}/v4/chat/completions/vision`,
-  ];
-  
-  console.log('[VISION] Tentativo analisi immagine...');
-  
   const requestBody = {
     messages,
     max_tokens: 4096
   };
   
-  for (const endpoint of endpoints) {
-    console.log('[VISION] Provando endpoint:', endpoint);
-    
-    try {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify(requestBody)
-      });
-      
-      if (response.ok) {
-        console.log('[VISION] ✓ Endpoint funzionante:', endpoint);
-        return await response.json();
-      } else if (response.status === 401) {
-        const errorText = await response.text();
-        console.log('[VISION] ✗ Auth error (endpoint esiste, verifica API key)');
-        throw new Error(`Errore autenticazione - verifica ZAI_API_KEY: ${errorText.substring(0, 200)}`);
-      } else if (response.status === 404) {
-        console.log('[VISION] ✗ Endpoint non trovato:', endpoint);
-        continue;
-      } else {
-        const errorText = await response.text();
-        console.log('[VISION] ✗ Errore:', response.status, errorText.substring(0, 100));
-        continue;
-      }
-    } catch (error) {
-      if (error instanceof Error && error.message.includes('autenticazione')) {
-        throw error;
-      }
-      console.log('[VISION] ✗ Errore:', endpoint, error);
-      continue;
-    }
+  console.log('[VISION] Request body structure:', JSON.stringify({
+    messages: [{ role: 'user', content: [{ type: 'text', text: prompt.substring(0, 50) + '...' }, { type: 'image_url' }] }]
+  }));
+  
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify(requestBody)
+  });
+  
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('[VISION] Errore risposta:', errorText);
+    throw new Error(`Errore Vision API (${response.status}): ${errorText.substring(0, 500)}`);
   }
   
-  throw new Error('Nessun endpoint vision disponibile. Verifica che la tua API supporti analisi immagini.');
+  return await response.json();
 }
 
 // Italian grade calculation
@@ -231,14 +185,12 @@ app.get('/debug', async (req, res) => {
   
   let testResults: any[] = [];
   
-  // Test different endpoints
+  // Test only the relevant endpoints
   const endpoints = [
-    `${baseUrl}/chat/completions`,
-    `${baseUrl}/v4/chat/completions`,
-    `${baseUrl}/chat/completions/vision`,
-    `${baseUrl}/v4/chat/completions/vision`,
+    `${baseUrl}/v4/chat/completions`,  // We know this works for chat
   ];
   
+  // Test chat endpoint
   for (const endpoint of endpoints) {
     try {
       const response = await fetch(endpoint, {
@@ -247,13 +199,19 @@ app.get('/debug', async (req, res) => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${apiKey || 'test'}`
         },
-        body: JSON.stringify({ messages: [{ role: 'user', content: 'test' }] })
+        body: JSON.stringify({ 
+          messages: [{ role: 'user', content: 'test' }],
+          max_tokens: 10
+        })
       });
+      
+      const responseText = await response.text();
       
       testResults.push({
         endpoint,
         status: response.status,
-        working: response.status !== 404
+        working: response.ok,
+        responsePreview: responseText.substring(0, 200)
       });
     } catch (error) {
       testResults.push({
@@ -265,13 +223,55 @@ app.get('/debug', async (req, res) => {
     }
   }
   
+  // Test multimodal (vision) support on the chat endpoint
+  const testImage = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  
+  let visionSupport = { tested: false, supported: false, error: null };
+  
+  try {
+    const visionResponse = await fetch(`${baseUrl}/v4/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Describe this image' },
+            { type: 'image_url', image_url: { url: testImage } }
+          ]
+        }],
+        max_tokens: 10
+      })
+    });
+    
+    visionSupport = {
+      tested: true,
+      supported: visionResponse.ok,
+      error: visionResponse.ok ? null : `Status ${visionResponse.status}`
+    };
+  } catch (error) {
+    visionSupport = {
+      tested: true,
+      supported: false,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+  
   res.json({
     config: {
       hasApiKey: !!apiKey,
       apiKeyLength: apiKey?.length || 0,
-      baseUrl
+      baseUrl,
+      note: "Usare ZAI_BASE_URL senza /v4 alla fine (es: https://api.z.ai/api/paas)"
     },
-    endpointTests: testResults,
+    chatEndpoint: testResults,
+    visionSupport,
+    recommendation: visionSupport.supported 
+      ? "API supporta chat e vision - tutto ok!"
+      : "API supporta chat ma potrebbe non supportare vision. Verifica che la tua API key abbia accesso alla funzione vision.",
     timestamp: new Date().toISOString()
   });
 });
