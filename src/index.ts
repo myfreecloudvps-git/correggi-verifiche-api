@@ -2,7 +2,6 @@ import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
-import ZAI from 'z-ai-web-dev-sdk';
 
 // Types
 interface AnalysisRequest {
@@ -26,65 +25,148 @@ interface Question {
   confirmed: boolean | null;
 }
 
-interface CorrectionResult {
-  studentName: string;
-  subject: string;
-  totalScore: number;
-  maxScore: number;
-  percentage: number;
-  grade: string;
-  questions: Question[];
-  overallFeedback: string;
-}
-
-// Create .z-ai-config file with CORRECT format
-function createZaiConfigFile(): { success: boolean; error?: string } {
+// API Configuration - Get from environment variables
+function getApiConfig() {
   const apiKey = process.env.ZAI_API_KEY;
-  // CORRECT baseUrl for z-ai-web-dev-sdk: https://api.z.ai/api/paas/v4
-  // The SDK will append /chat/completions for chat and /chat/completions/vision for vision
-  const baseUrl = process.env.ZAI_BASE_URL || 'https://api.z.ai/api/paas';
+  const baseUrl = process.env.ZAI_BASE_URL || 'https://api.z.ai/api/paas/v4';
   
-  console.log('[CONFIG] Creazione file .z-ai-config...');
   console.log('[CONFIG] API Key presente:', !!apiKey);
   console.log('[CONFIG] Base URL:', baseUrl);
   
+  return { apiKey, baseUrl };
+}
+
+// Direct HTTP call to chat completions API
+async function callChatAPI(messages: any[], temperature: number = 0.7): Promise<any> {
+  const { apiKey, baseUrl } = getApiConfig();
+  
   if (!apiKey) {
-    return { success: false, error: 'ZAI_API_KEY non impostata' };
+    throw new Error('ZAI_API_KEY non configurata');
   }
   
-  // Format REQUIRED by SDK:
-  // {
-  //   "baseUrl": "https://api.example.com/v1",
-  //   "apiKey": "YOUR_API_KEY"
-  // }
-  const configContent = JSON.stringify({
-    baseUrl: baseUrl,
-    apiKey: apiKey
-  }, null, 2);
-  
-  console.log('[CONFIG] Contenuto config:', JSON.stringify({ baseUrl: baseUrl, apiKey: '***hidden***' }, null, 2));
-  
-  // Try multiple locations
-  const locations = [
-    path.join(process.cwd(), '.z-ai-config'),
-    path.join(process.env.HOME || '/root', '.z-ai-config'),
-    '/etc/.z-ai-config'
+  // Build the full URL - try different endpoints
+  const endpoints = [
+    `${baseUrl}/chat/completions`,
+    `${baseUrl}/v4/chat/completions`,
   ];
   
-  for (const configPath of locations) {
+  console.log('[API] Tentativo chiamata chat...');
+  
+  const requestBody = {
+    messages,
+    temperature,
+    max_tokens: 4096
+  };
+  
+  for (const endpoint of endpoints) {
+    console.log('[API] Provando endpoint:', endpoint);
+    
     try {
-      fs.writeFileSync(configPath, configContent, 'utf8');
-      console.log('[CONFIG] File creato con successo:', configPath);
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(requestBody)
+      });
       
-      // Verify file was created correctly
-      const verify = fs.readFileSync(configPath, 'utf8');
-      console.log('[CONFIG] Verifica contenuto:', verify.substring(0, 100));
-    } catch (e) {
-      console.log('[CONFIG] Impossibile scrivere in:', configPath, e instanceof Error ? e.message : String(e));
+      if (response.ok) {
+        console.log('[API] ✓ Endpoint funzionante:', endpoint);
+        return await response.json();
+      } else if (response.status === 401) {
+        const errorText = await response.text();
+        console.log('[API] ✗ Auth error (endpoint esiste):', endpoint);
+        throw new Error(`Errore autenticazione: ${errorText}`);
+      } else if (response.status === 404) {
+        console.log('[API] ✗ Endpoint non trovato:', endpoint);
+        continue;
+      } else {
+        console.log('[API] ✗ Errore:', response.status, endpoint);
+        continue;
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('autenticazione')) {
+        throw error;
+      }
+      console.log('[API] ✗ Errore connessione:', endpoint, error);
+      continue;
     }
   }
   
-  return { success: true };
+  throw new Error('Nessun endpoint disponibile. Verifica ZAI_BASE_URL');
+}
+
+// Direct HTTP call for vision - sends image with chat completion
+async function callVisionAPI(imageUrl: string, prompt: string): Promise<any> {
+  const { apiKey, baseUrl } = getApiConfig();
+  
+  if (!apiKey) {
+    throw new Error('ZAI_API_KEY non configurata');
+  }
+  
+  // Build message with image
+  const messages = [{
+    role: 'user',
+    content: [
+      { type: 'text', text: prompt },
+      { type: 'image_url', image_url: { url: imageUrl } }
+    ]
+  }];
+  
+  // Try different endpoint variations
+  const endpoints = [
+    `${baseUrl}/chat/completions`,
+    `${baseUrl}/v4/chat/completions`,
+    `${baseUrl}/chat/completions/vision`,
+    `${baseUrl}/v4/chat/completions/vision`,
+  ];
+  
+  console.log('[VISION] Tentativo analisi immagine...');
+  
+  const requestBody = {
+    messages,
+    max_tokens: 4096
+  };
+  
+  for (const endpoint of endpoints) {
+    console.log('[VISION] Provando endpoint:', endpoint);
+    
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(requestBody)
+      });
+      
+      if (response.ok) {
+        console.log('[VISION] ✓ Endpoint funzionante:', endpoint);
+        return await response.json();
+      } else if (response.status === 401) {
+        const errorText = await response.text();
+        console.log('[VISION] ✗ Auth error (endpoint esiste, verifica API key)');
+        throw new Error(`Errore autenticazione - verifica ZAI_API_KEY: ${errorText.substring(0, 200)}`);
+      } else if (response.status === 404) {
+        console.log('[VISION] ✗ Endpoint non trovato:', endpoint);
+        continue;
+      } else {
+        const errorText = await response.text();
+        console.log('[VISION] ✗ Errore:', response.status, errorText.substring(0, 100));
+        continue;
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('autenticazione')) {
+        throw error;
+      }
+      console.log('[VISION] ✗ Errore:', endpoint, error);
+      continue;
+    }
+  }
+  
+  throw new Error('Nessun endpoint vision disponibile. Verifica che la tua API supporti analisi immagini.');
 }
 
 // Italian grade calculation
@@ -138,78 +220,59 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '50mb' }));
 
-// Initialize ZAI
-let zaiInstance: Awaited<ReturnType<typeof ZAI.create>> | null = null;
-
-async function initZAI() {
-  if (!zaiInstance) {
-    console.log('[INIT] Inizializzazione ZAI SDK...');
-    
-    // Create config file FIRST
-    const configResult = createZaiConfigFile();
-    if (!configResult.success) {
-      throw new Error(configResult.error || 'Errore creazione config');
-    }
-    
-    try {
-      zaiInstance = await ZAI.create();
-      console.log('[INIT] ZAI SDK inizializzato con successo!');
-    } catch (error) {
-      console.error('[INIT] Errore inizializzazione ZAI SDK:', error);
-      throw error;
-    }
-  }
-  return zaiInstance;
-}
-
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Debug endpoint
+// Debug endpoint - test API connection
 app.get('/debug', async (req, res) => {
-  const apiKey = process.env.ZAI_API_KEY;
-  const baseUrl = process.env.ZAI_BASE_URL;
+  const { apiKey, baseUrl } = getApiConfig();
   
-  // Try to create config
-  const configResult = createZaiConfigFile();
+  let testResults: any[] = [];
   
-  // Check if files exist
-  const cwdConfig = path.join(process.cwd(), '.z-ai-config');
-  const homeConfig = path.join(process.env.HOME || '/root', '.z-ai-config');
-  const etcConfig = '/etc/.z-ai-config';
+  // Test different endpoints
+  const endpoints = [
+    `${baseUrl}/chat/completions`,
+    `${baseUrl}/v4/chat/completions`,
+    `${baseUrl}/chat/completions/vision`,
+    `${baseUrl}/v4/chat/completions/vision`,
+  ];
   
-  let zaiStatus = 'not_initialized';
-  let initError = null;
-  
-  try {
-    await initZAI();
-    zaiStatus = 'initialized';
-  } catch (e) {
-    zaiStatus = 'error';
-    initError = e instanceof Error ? e.message : String(e);
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey || 'test'}`
+        },
+        body: JSON.stringify({ messages: [{ role: 'user', content: 'test' }] })
+      });
+      
+      testResults.push({
+        endpoint,
+        status: response.status,
+        working: response.status !== 404
+      });
+    } catch (error) {
+      testResults.push({
+        endpoint,
+        status: 'error',
+        working: false,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
   
-  res.json({ 
-    environment: {
+  res.json({
+    config: {
       hasApiKey: !!apiKey,
       apiKeyLength: apiKey?.length || 0,
-      baseUrl: baseUrl || 'non impostato (default: https://api.z.ai/api/paas)'
+      baseUrl
     },
-    configFile: {
-      creationSuccess: configResult.success,
-      cwdExists: fs.existsSync(cwdConfig),
-      homeExists: fs.existsSync(homeConfig),
-      etcExists: fs.existsSync(etcConfig),
-      cwdPath: cwdConfig,
-      homePath: homeConfig
-    },
-    zai: {
-      status: zaiStatus,
-      error: initError
-    },
-    timestamp: new Date().toISOString() 
+    endpointTests: testResults,
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -228,38 +291,28 @@ app.post('/api/analyze', async (req, res) => {
 
     console.log(`[API] Parametri: materia=${subject}, tipo=${testType}, maxScore=${maxScore}`);
 
-    // Initialize ZAI
-    const zai = await initZAI();
-    console.log('[API] ZAI pronto');
-
-    // Step 1: Extract text using VLM
-    console.log('[API] Step 1: Estrazione testo con VLM...');
+    // Step 1: Extract text using Vision API
+    console.log('[API] Step 1: Estrazione testo con Vision...');
     
     const extractionPrompt = `Analizza questa immagine di una verifica scolastica italiana. 
 Estrai il testo: nome studente, domande numerate, risposte dello studente.
-Rispondi in JSON: {"studentName":"nome","questions":[{"number":1,"text":"domanda","studentAnswer":"risposta"}]}`;
+Rispondi SOLO in formato JSON senza markdown:
+{"studentName":"nome","questions":[{"number":1,"text":"domanda","studentAnswer":"risposta"}]}`;
 
     let extractionResponse;
     try {
-      extractionResponse = await zai.chat.completions.createVision({
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'text', text: extractionPrompt },
-            { type: 'image_url', image_url: { url: image } }
-          ]
-        }]
-      } as any);
-      console.log('[API] VLM risposta ricevuta');
-    } catch (vlmError) {
-      console.error('[API] Errore VLM:', vlmError);
+      extractionResponse = await callVisionAPI(image, extractionPrompt);
+      console.log('[API] Vision risposta ricevuta');
+    } catch (visionError) {
+      console.error('[API] Errore Vision:', visionError);
       return res.status(500).json({ 
         error: 'Errore nell\'analisi dell\'immagine.',
-        details: vlmError instanceof Error ? vlmError.message : String(vlmError)
+        details: visionError instanceof Error ? visionError.message : String(visionError)
       });
     }
 
     const extractionResult = extractionResponse.choices?.[0]?.message?.content;
+    console.log('[API] Risposta Vision:', extractionResult?.substring(0, 200));
     
     let extractedData: { studentName: string; questions: Array<{number: number; text: string; studentAnswer: string}> };
     try {
@@ -273,25 +326,28 @@ Rispondi in JSON: {"studentName":"nome","questions":[{"number":1,"text":"domanda
       return res.status(400).json({ error: 'Nessuna domanda identificata.' });
     }
 
-    // Step 2: Evaluate using LLM
+    // Step 2: Evaluate using Chat API
     console.log('[API] Step 2: Valutazione con LLM...');
     
     const questionsPerScore = maxScore / extractedData.questions.length;
     const evaluationPrompt = `Sei un insegnante di ${subject}. Valuta questa verifica.
 ${getSubjectInstructions(subject)}
 ${getTestTypeInstructions(testType)}
-Domande: ${extractedData.questions.map(q => `D${q.number}: ${q.text} - R: ${q.studentAnswer}`).join('; ')}
-Rispondi in JSON: {"questions":[{"number":1,"score":2,"correctAnswer":"","feedback":"ok","isCorrect":true}],"overallFeedback":"ok"}`;
+
+Domande dello studente:
+${extractedData.questions.map(q => `Domanda ${q.number}: ${q.text}\nRisposta: ${q.studentAnswer}`).join('\n\n')}
+
+Per ogni domanda, assegna un punteggio da 0 a ${questionsPerScore.toFixed(1)} e fornisci un feedback breve.
+Rispondi SOLO in formato JSON senza markdown:
+{"questions":[{"number":1,"score":punteggio,"correctAnswer":"risposta corretta se diversa","feedback":"feedback breve","isCorrect":true/false}],"overallFeedback":"commento generale"}`;
 
     let evaluation;
     try {
-      const evalResponse = await zai.chat.completions.create({
-        messages: [
-          { role: 'system', content: 'Sei un insegnante. Rispondi in JSON.' },
-          { role: 'user', content: evaluationPrompt }
-        ],
-        temperature: 0.3
-      });
+      const evalResponse = await callChatAPI([
+        { role: 'system', content: 'Sei un insegnante esperto. Rispondi sempre in formato JSON valido.' },
+        { role: 'user', content: evaluationPrompt }
+      ], 0.3);
+      
       const evalResult = evalResponse.choices?.[0]?.message?.content;
       const jsonMatch = evalResult?.match(/\{[\s\S]*\}/);
       evaluation = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
@@ -302,8 +358,14 @@ Rispondi in JSON: {"questions":[{"number":1,"score":2,"correctAnswer":"","feedba
 
     if (!evaluation) {
       evaluation = {
-        questions: extractedData.questions.map(q => ({ number: q.number, score: questionsPerScore / 2, correctAnswer: '', feedback: 'Auto', isCorrect: false })),
-        overallFeedback: 'Valutazione automatica.'
+        questions: extractedData.questions.map(q => ({ 
+          number: q.number, 
+          score: questionsPerScore / 2, 
+          correctAnswer: '', 
+          feedback: 'Valutazione automatica', 
+          isCorrect: false 
+        })),
+        overallFeedback: 'Valutazione automatica generata.'
       };
     }
 
@@ -355,5 +417,5 @@ app.listen(PORT, () => {
   console.log(`📍 Health: http://localhost:${PORT}/health`);
   console.log(`🔍 Debug: http://localhost:${PORT}/debug`);
   console.log(`🔑 ZAI_API_KEY presente: ${!!process.env.ZAI_API_KEY}`);
-  console.log(`🌐 ZAI_BASE_URL: ${process.env.ZAI_BASE_URL || 'default: https://api.z.ai/api/paas'}`);
+  console.log(`🌐 ZAI_BASE_URL: ${process.env.ZAI_BASE_URL || 'default: https://api.z.ai/api/paas/v4'}`);
 });
