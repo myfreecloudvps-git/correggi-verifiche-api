@@ -70,6 +70,7 @@ async function callVisionAPI(imageUrl: string, prompt: string): Promise<any> {
   const endpoint = `${baseUrl}/v4/chat/completions`;
   
   console.log('[VISION] Calling:', endpoint);
+  console.log('[VISION] Image type:', imageUrl?.substring(0, 30));
   console.log('[VISION] Image length:', imageUrl?.length || 0);
   
   const messages = [{
@@ -80,28 +81,41 @@ async function callVisionAPI(imageUrl: string, prompt: string): Promise<any> {
     ]
   }];
   
+  const requestBody = {
+    messages,
+    max_tokens: 4096
+  };
+  
+  console.log('[VISION] Sending request...');
+  
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`
     },
-    body: JSON.stringify({
-      messages,
-      max_tokens: 4096
-    })
+    body: JSON.stringify(requestBody)
   });
   
+  const responseText = await response.text();
+  console.log('[VISION] Response status:', response.status);
+  console.log('[VISION] Response body (first 500 chars):', responseText.substring(0, 500));
+  
   if (!response.ok) {
-    const errorText = await response.text();
-    console.error('[VISION] Error response:', errorText);
-    throw new Error(`Vision API Error (${response.status}): ${errorText.substring(0, 500)}`);
+    throw new Error(`Vision API Error (${response.status}): ${responseText.substring(0, 500)}`);
   }
   
-  const result = await response.json();
-  console.log('[VISION] Response received, content length:', result.choices?.[0]?.message?.content?.length || 0);
-  
-  return result;
+  try {
+    const result = JSON.parse(responseText);
+    console.log('[VISION] Parsed successfully');
+    console.log('[VISION] Has choices:', !!result.choices);
+    console.log('[VISION] Has message:', !!result.choices?.[0]?.message);
+    console.log('[VISION] Content length:', result.choices?.[0]?.message?.content?.length || 0);
+    return result;
+  } catch (parseError) {
+    console.error('[VISION] Parse error:', parseError);
+    throw new Error(`Failed to parse API response: ${responseText.substring(0, 200)}`);
+  }
 }
 
 // Italian grade calculation
@@ -198,6 +212,8 @@ app.get('/debug', async (req, res) => {
 
 // Test endpoint - returns raw AI response for debugging
 app.post('/api/test-vision', async (req, res) => {
+  const { apiKey, baseUrl } = getApiConfig();
+  
   try {
     const { image } = req.body;
     
@@ -205,7 +221,10 @@ app.post('/api/test-vision', async (req, res) => {
       return res.status(400).json({ error: 'Immagine mancante' });
     }
     
+    console.log('[TEST] ========================================');
     console.log('[TEST] Testing vision with image...');
+    console.log('[TEST] Image length:', image?.length || 0);
+    console.log('[TEST] Image starts with:', image?.substring(0, 50));
     
     const prompt = `Guarda questa immagine e descrivi esattamente cosa vedi.
 Elenca:
@@ -216,21 +235,72 @@ Elenca:
 
 Rispondi in italiano in modo dettagliato.`;
 
-    const response = await callVisionAPI(image, prompt);
-    const content = response.choices?.[0]?.message?.content;
+    const endpoint = `${baseUrl}/v4/chat/completions`;
     
-    console.log('[TEST] Raw response:', content?.substring(0, 500));
+    const requestBody = {
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: prompt },
+          { type: 'image_url', image_url: { url: image } }
+        ]
+      }],
+      max_tokens: 4096
+    };
+    
+    console.log('[TEST] Calling:', endpoint);
+    
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify(requestBody)
+    });
+    
+    const responseText = await response.text();
+    console.log('[TEST] Response status:', response.status);
+    console.log('[TEST] Response body (first 1000 chars):', responseText.substring(0, 1000));
+    
+    if (!response.ok) {
+      return res.json({
+        success: false,
+        error: `API Error (${response.status})`,
+        details: responseText.substring(0, 1000),
+        endpoint: endpoint
+      });
+    }
+    
+    let result;
+    try {
+      result = JSON.parse(responseText);
+    } catch (e) {
+      return res.json({
+        success: false,
+        error: 'Failed to parse JSON response',
+        rawResponse: responseText.substring(0, 1000)
+      });
+    }
+    
+    const content = result.choices?.[0]?.message?.content;
+    console.log('[TEST] Content length:', content?.length || 0);
+    console.log('[TEST] Content preview:', content?.substring(0, 300));
+    console.log('[TEST] ========================================');
     
     res.json({
       success: true,
       rawResponse: content,
-      responseLength: content?.length || 0
+      responseLength: content?.length || 0,
+      fullResult: result
     });
     
   } catch (error) {
     console.error('[TEST] Error:', error);
-    res.status(500).json({
-      error: error instanceof Error ? error.message : String(error)
+    res.json({
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined
     });
   }
 });
