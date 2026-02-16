@@ -35,26 +35,6 @@ interface CorrectionResult {
   overallFeedback: string;
 }
 
-// Vision message content types
-interface TextContent {
-  type: 'text';
-  text: string;
-}
-
-interface ImageUrlContent {
-  type: 'image_url';
-  image_url: {
-    url: string;
-  };
-}
-
-type VisionContent = TextContent | ImageUrlContent;
-
-interface VisionMessage {
-  role: 'user' | 'assistant' | 'system';
-  content: VisionContent[];
-}
-
 // Italian grade calculation
 function calculateGrade(percentage: number): string {
   if (percentage >= 95) return "10 eccellente";
@@ -159,20 +139,18 @@ Rispondi in formato JSON con questa struttura:
 Se non riesci a leggere qualcosa, scrivi "[illeggibile]". 
 Se l'immagine non sembra una verifica scolastica, rispondi con un messaggio di errore.`;
 
-    // Build vision message content with explicit typing
-    const visionContent: VisionContent[] = [
-      { type: 'text', text: extractionPrompt },
-      { type: 'image_url', image_url: { url: image } }
-    ];
-
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const extractionResponse = await zai.chat.completions.createVision({
       messages: [
         {
           role: 'user',
-          content: visionContent
+          content: [
+            { type: 'text', text: extractionPrompt },
+            { type: 'image_url', image_url: { url: image } }
+          ]
         }
       ]
-    });
+    } as any);
 
     const extractionResult = extractionResponse.choices[0]?.message?.content;
     let extractedData: { studentName: string; questions: Array<{number: number; text: string; studentAnswer: string}> };
@@ -202,20 +180,18 @@ DOMANDA 2: [testo domanda]
 RISPOSTA 2: [risposta studente]
 ...`;
 
-      // Build vision message content with explicit typing
-      const altVisionContent: VisionContent[] = [
-        { type: 'text', text: alternativePrompt },
-        { type: 'image_url', image_url: { url: image } }
-      ];
-
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const alternativeResponse = await zai.chat.completions.createVision({
         messages: [
           {
             role: 'user',
-            content: altVisionContent
+            content: [
+              { type: 'text', text: alternativePrompt },
+              { type: 'image_url', image_url: { url: image } }
+            ]
           }
         ]
-      });
+      } as any);
 
       const altResult = alternativeResponse.choices[0]?.message?.content || '';
       
