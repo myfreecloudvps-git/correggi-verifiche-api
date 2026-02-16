@@ -91,7 +91,14 @@ let zaiInstance: Awaited<ReturnType<typeof ZAI.create>> | null = null;
 
 async function initZAI() {
   if (!zaiInstance) {
-    zaiInstance = await ZAI.create();
+    console.log('[INIT] Inizializzazione ZAI SDK...');
+    try {
+      zaiInstance = await ZAI.create();
+      console.log('[INIT] ZAI SDK inizializzato con successo');
+    } catch (error) {
+      console.error('[INIT] Errore inizializzazione ZAI SDK:', error);
+      throw error;
+    }
   }
   return zaiInstance;
 }
@@ -101,95 +108,192 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Debug endpoint
+app.get('/debug', async (req, res) => {
+  try {
+    const zai = await initZAI();
+    res.json({ 
+      status: 'ZAI initialized', 
+      hasInstance: !!zai,
+      timestamp: new Date().toISOString() 
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      status: 'ZAI initialization failed', 
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
+
 // Main analysis endpoint
 app.post('/api/analyze', async (req, res) => {
+  console.log('[API] Ricevuta richiesta di analisi');
+  console.log('[API] Body keys:', Object.keys(req.body));
+  
   try {
     const body: AnalysisRequest = req.body;
     const { image, subject, testType, customInstructions, maxScore } = body;
 
-    if (!image || !subject || !testType) {
-      return res.status(400).json({
-        error: 'Immagine, materia e tipo di verifica sono obbligatori'
+    // Validate input
+    if (!image) {
+      console.error('[API] Errore: immagine mancante');
+      return res.status(400).json({ error: 'Immagine mancante' });
+    }
+    if (!subject) {
+      console.error('[API] Errore: materia mancante');
+      return res.status(400).json({ error: 'Materia mancante' });
+    }
+    if (!testType) {
+      console.error('[API] Errore: tipo verifica mancante');
+      return res.status(400).json({ error: 'Tipo di verifica mancante' });
+    }
+
+    console.log(`[API] Parametri: materia=${subject}, tipo=${testType}, maxScore=${maxScore}`);
+    console.log(`[API] Dimensione immagine: ${image.length} caratteri`);
+
+    // Initialize ZAI
+    console.log('[API] Inizializzazione ZAI...');
+    const zai = await initZAI();
+    console.log('[API] ZAI pronto');
+
+    // Step 1: Extract text from image using VLM
+    console.log('[API] Step 1: Estrazione testo con VLM...');
+    
+    const extractionPrompt = `Analizza questa immagine di una verifica scolastica italiana. 
+Estrai TUTTO il testo che vedi nell'immagine:
+- Il nome dello studente se presente
+- Le domande numerate
+- Le risposte scritte dallo studente
+
+Rispondi ESCLUSIVAMENTE in formato JSON valido:
+{
+  "studentName": "nome dello studente o stringa vuota se non presente",
+  "questions": [
+    {
+      "number": 1,
+      "text": "testo della domanda",
+      "studentAnswer": "risposta scritta dallo studente"
+    }
+  ]
+}`;
+
+    let extractionResponse;
+    try {
+      extractionResponse = await zai.chat.completions.createVision({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: extractionPrompt },
+              { type: 'image_url', image_url: { url: image } }
+            ]
+          }
+        ]
+      } as any);
+      console.log('[API] VLM risposta ricevuta');
+    } catch (vlmError) {
+      console.error('[API] Errore VLM:', vlmError);
+      return res.status(500).json({ 
+        error: 'Errore nell\'analisi dell\'immagine. L\'immagine potrebbe essere troppo grande o in un formato non supportato.',
+        details: vlmError instanceof Error ? vlmError.message : String(vlmError)
       });
     }
 
-    // Initialize ZAI
-    const zai = await initZAI();
-
-    // Step 1: Extract text from image using VLM
-    const extractionPrompt = `Analizza questa immagine di una verifica scolastica. 
-Estrai TUTTO il testo presente nell'immagine:
-- Nome dello studente se presente
-- Domande numerate
-- Risposte dello studente
-
-Rispondi in JSON:
-{
-  "studentName": "nome o stringa vuota",
-  "questions": [{"number": 1, "text": "domanda", "studentAnswer": "risposta"}]
-}`;
-
-    const extractionResponse = await zai.chat.completions.createVision({
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: extractionPrompt },
-            { type: 'image_url', image_url: { url: image } }
-          ]
-        }
-      ]
-    } as any);
-
-    const extractionResult = extractionResponse.choices[0]?.message?.content;
+    const extractionResult = extractionResponse.choices?.[0]?.message?.content;
+    console.log('[API] Risultato estrazione:', extractionResult?.substring(0, 200) + '...');
+    
     let extractedData: { studentName: string; questions: Array<{number: number; text: string; studentAnswer: string}> };
 
     try {
       const jsonMatch = extractionResult?.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         extractedData = JSON.parse(jsonMatch[0]);
+        console.log('[API] JSON estratto correttamente, domande trovate:', extractedData.questions?.length || 0);
       } else {
-        throw new Error('Nessun JSON trovato');
+        throw new Error('Nessun JSON trovato nella risposta VLM');
       }
-    } catch {
+    } catch (parseError) {
+      console.error('[API] Errore parsing JSON:', parseError);
+      // Fallback: crea una domanda con tutto il testo estratto
       extractedData = {
         studentName: '',
-        questions: [{ number: 1, text: 'Domanda estratta', studentAnswer: extractionResult || '' }]
+        questions: [{ 
+          number: 1, 
+          text: 'Testo estratto dalla verifica', 
+          studentAnswer: extractionResult || 'Nessun testo riconosciuto'
+        }]
       };
     }
 
     if (!extractedData.questions || extractedData.questions.length === 0) {
+      console.error('[API] Nessuna domanda identificata');
       return res.status(400).json({
-        error: 'Non sono riuscito a identificare domande nella verifica.'
+        error: 'Non sono riuscito a identificare domande nella verifica. Assicurati che l\'immagine sia chiara e leggibile.'
       });
     }
 
     // Step 2: Evaluate using LLM
+    console.log('[API] Step 2: Valutazione con LLM...');
+    
     const subjectInstructions = getSubjectInstructions(subject);
     const testTypeInstructions = getTestTypeInstructions(testType);
     const questionsPerScore = maxScore / extractedData.questions.length;
     
-    const evaluationPrompt = `Sei un insegnante di ${subject}. Valuta questa verifica.
+    const evaluationPrompt = `Sei un insegnante italiano esperto di ${subject}. Devi valutare questa verifica scolastica.
 
+CRITERI DI VALUTAZIONE:
 ${subjectInstructions}
 ${testTypeInstructions}
 
-DOMANDE E RISPOSTE:
-${extractedData.questions.map((q) => `DOMANDA ${q.number}: ${q.text}\nRISPOSTA: ${q.studentAnswer || '[nessuna]'}`).join('\n\n')}
+LA VERIFICA CONTIENE ${extractedData.questions.length} DOMANDE.
+Punteggio per domanda: ${questionsPerScore.toFixed(1)} punti.
 
-Assegna punteggi (max ${questionsPerScore.toFixed(1)} per domanda) e fornisci feedback.
-Rispondi in JSON:
-{"questions":[{"number":1,"score":2.5,"correctAnswer":"risposta","feedback":"commento","isCorrect":true}],"overallFeedback":"feedback generale"}`;
+DOMANDE E RISPOSTE DELLO STUDENTE:
+${extractedData.questions.map((q) => `
+DOMANDA ${q.number}: ${q.text}
+RISPOSTA DELLO STUDENTE: ${q.studentAnswer || '[nessuna risposta fornita]'
+}`).join('\n')}
 
-    const evaluationResponse = await zai.chat.completions.create({
-      messages: [
-        { role: 'system', content: 'Sei un insegnante italiano. Rispondi in JSON.' },
-        { role: 'user', content: evaluationPrompt }
-      ],
-      temperature: 0.3
-    });
+Per OGNI domanda fornisci:
+1. Un punteggio da 0 a ${questionsPerScore.toFixed(1)}
+2. La risposta corretta attesa (se applicabile)
+3. Un breve feedback costruttivo
 
-    const evaluationResult = evaluationResponse.choices[0]?.message?.content;
+Rispondi ESCLUSIVAMENTE in formato JSON valido:
+{
+  "questions": [
+    {
+      "number": 1,
+      "score": 2.0,
+      "correctAnswer": "risposta corretta",
+      "feedback": "feedback per lo studente",
+      "isCorrect": true
+    }
+  ],
+  "overallFeedback": "commento generale sulla verifica"
+}`;
+
+    let evaluationResponse;
+    try {
+      evaluationResponse = await zai.chat.completions.create({
+        messages: [
+          { role: 'system', content: 'Sei un insegnante italiano esperto. Rispondi SEMPRE in formato JSON valido, senza testo aggiuntivo.' },
+          { role: 'user', content: evaluationPrompt }
+        ],
+        temperature: 0.3
+      });
+      console.log('[API] LLM risposta ricevuta');
+    } catch (llmError) {
+      console.error('[API] Errore LLM:', llmError);
+      return res.status(500).json({ 
+        error: 'Errore nella valutazione. Riprova.',
+        details: llmError instanceof Error ? llmError.message : String(llmError)
+      });
+    }
+
+    const evaluationResult = evaluationResponse.choices?.[0]?.message?.content;
+    console.log('[API] Risultato valutazione:', evaluationResult?.substring(0, 200) + '...');
+    
     let evaluation: { 
       questions: Array<{number: number; score: number; correctAnswer: string; feedback: string; isCorrect: boolean}>;
       overallFeedback: string;
@@ -199,36 +303,40 @@ Rispondi in JSON:
       const jsonMatch = evaluationResult?.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         evaluation = JSON.parse(jsonMatch[0]);
+        console.log('[API] Valutazione JSON parsata correttamente');
       } else {
-        throw new Error('No JSON');
+        throw new Error('Nessun JSON nella valutazione');
       }
-    } catch {
+    } catch (parseError) {
+      console.error('[API] Errore parsing valutazione, uso defaults:', parseError);
       evaluation = {
         questions: extractedData.questions.map((q) => ({
           number: q.number,
           score: questionsPerScore / 2,
           correctAnswer: '',
-          feedback: 'Valutazione non disponibile',
+          feedback: 'Valutazione automatica',
           isCorrect: false
         })),
-        overallFeedback: 'Valutazione completata.'
+        overallFeedback: 'Valutazione completata con valori di default.'
       };
     }
 
     // Build result
+    console.log('[API] Step 3: Costruzione risultato finale...');
+    
     const finalQuestions: Question[] = extractedData.questions.map((q, index) => {
-      const evalQ = evaluation.questions?.find((eq) => eq.number === q.number) || evaluation.questions?.[index] || { score: questionsPerScore / 2, correctAnswer: '', feedback: 'Nessun feedback', isCorrect: false };
+      const evalQ = evaluation.questions?.find((eq) => eq.number === q.number) || evaluation.questions?.[index];
       
       return {
         id: `q-${q.number}-${Date.now()}`,
         number: q.number,
         text: q.text,
         studentAnswer: q.studentAnswer || '',
-        correctAnswer: evalQ.correctAnswer || '',
-        score: Math.min(Math.max(0, evalQ.score || 0), questionsPerScore),
+        correctAnswer: evalQ?.correctAnswer || '',
+        score: Math.min(Math.max(0, evalQ?.score || questionsPerScore / 2), questionsPerScore),
         maxScore: questionsPerScore,
-        feedback: evalQ.feedback || 'Nessun feedback',
-        isCorrect: evalQ.isCorrect ?? (evalQ.score >= questionsPerScore * 0.6),
+        feedback: evalQ?.feedback || 'Nessun feedback disponibile',
+        isCorrect: evalQ?.isCorrect ?? ((evalQ?.score || 0) >= questionsPerScore * 0.6),
         confirmed: null
       };
     });
@@ -247,24 +355,36 @@ Rispondi in JSON:
       overallFeedback: evaluation.overallFeedback || 'Valutazione completata.'
     };
 
+    console.log('[API] Risultato finale:', JSON.stringify(result).substring(0, 300) + '...');
+    console.log('[API] Analisi completata con successo!');
+
     res.json({ result });
 
   } catch (error) {
-    console.error('Analysis error:', error);
+    console.error('[API] Errore generico:', error);
+    console.error('[API] Stack trace:', error instanceof Error ? error.stack : 'N/A');
     res.status(500).json({
-      error: 'Errore durante l\'analisi. Riprova.'
+      error: 'Si è verificato un errore durante l\'analisi.',
+      message: error instanceof Error ? error.message : 'Errore sconosciuto',
+      timestamp: new Date().toISOString()
     });
   }
 });
 
 // Error handling
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error('Error:', err);
-  res.status(500).json({ error: 'Errore interno del server' });
+  console.error('[SERVER] Errore non gestito:', err);
+  console.error('[SERVER] Stack:', err.stack);
+  res.status(500).json({ 
+    error: 'Errore interno del server',
+    message: err.message 
+  });
 });
 
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 Server avviato sulla porta ${PORT}`);
   console.log(`📍 Health check: http://localhost:${PORT}/health`);
+  console.log(`🔍 Debug: http://localhost:${PORT}/debug`);
+  console.log(`🔌 API endpoint: http://localhost:${PORT}/api/analyze`);
 });
