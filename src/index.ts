@@ -1,7 +1,5 @@
 import express from 'express';
 import cors from 'cors';
-import fs from 'fs';
-import path from 'path';
 
 // Types
 interface AnalysisRequest {
@@ -25,36 +23,22 @@ interface Question {
   confirmed: boolean | null;
 }
 
-// API Configuration - Get from environment variables
+// API Configuration
 function getApiConfig() {
   const apiKey = process.env.ZAI_API_KEY;
-  const baseUrl = process.env.ZAI_BASE_URL || 'https://api.z.ai/api/paas/v4';
-  
-  console.log('[CONFIG] API Key presente:', !!apiKey);
-  console.log('[CONFIG] Base URL:', baseUrl);
-  
+  const baseUrl = process.env.ZAI_BASE_URL || 'https://api.z.ai/api/paas';
   return { apiKey, baseUrl };
 }
 
-// Direct HTTP call to chat completions API
-// Based on /debug results: ONLY /v4/chat/completions works!
-async function callChatAPI(messages: any[], temperature: number = 0.7): Promise<any> {
+// Call the chat/completions endpoint
+async function callChatAPI(messages: any[], temperature: number = 0.3): Promise<any> {
   const { apiKey, baseUrl } = getApiConfig();
   
-  if (!apiKey) {
-    throw new Error('ZAI_API_KEY non configurata');
-  }
+  if (!apiKey) throw new Error('ZAI_API_KEY non configurata');
   
-  // Use the working endpoint directly
   const endpoint = `${baseUrl}/v4/chat/completions`;
   
-  console.log('[API] Chiamata chat a:', endpoint);
-  
-  const requestBody = {
-    messages,
-    temperature,
-    max_tokens: 4096
-  };
+  console.log('[API] Calling:', endpoint);
   
   const response = await fetch(endpoint, {
     method: 'POST',
@@ -62,32 +46,32 @@ async function callChatAPI(messages: any[], temperature: number = 0.7): Promise<
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`
     },
-    body: JSON.stringify(requestBody)
+    body: JSON.stringify({
+      messages,
+      temperature,
+      max_tokens: 4096
+    })
   });
   
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Errore API (${response.status}): ${errorText.substring(0, 500)}`);
+    throw new Error(`API Error (${response.status}): ${errorText.substring(0, 500)}`);
   }
   
   return await response.json();
 }
 
-// Vision API - uses the same /v4/chat/completions endpoint with multimodal messages
-// Many APIs support images in the standard chat endpoint
+// Vision call - same endpoint with image content
 async function callVisionAPI(imageUrl: string, prompt: string): Promise<any> {
   const { apiKey, baseUrl } = getApiConfig();
   
-  if (!apiKey) {
-    throw new Error('ZAI_API_KEY non configurata');
-  }
+  if (!apiKey) throw new Error('ZAI_API_KEY non configurata');
   
-  // Use the working endpoint - same as chat but with image content
   const endpoint = `${baseUrl}/v4/chat/completions`;
   
-  console.log('[VISION] Chiamata vision a:', endpoint);
+  console.log('[VISION] Calling:', endpoint);
+  console.log('[VISION] Image length:', imageUrl?.length || 0);
   
-  // Build multimodal message with image
   const messages = [{
     role: 'user',
     content: [
@@ -96,31 +80,28 @@ async function callVisionAPI(imageUrl: string, prompt: string): Promise<any> {
     ]
   }];
   
-  const requestBody = {
-    messages,
-    max_tokens: 4096
-  };
-  
-  console.log('[VISION] Request body structure:', JSON.stringify({
-    messages: [{ role: 'user', content: [{ type: 'text', text: prompt.substring(0, 50) + '...' }, { type: 'image_url' }] }]
-  }));
-  
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`
     },
-    body: JSON.stringify(requestBody)
+    body: JSON.stringify({
+      messages,
+      max_tokens: 4096
+    })
   });
   
   if (!response.ok) {
     const errorText = await response.text();
-    console.error('[VISION] Errore risposta:', errorText);
-    throw new Error(`Errore Vision API (${response.status}): ${errorText.substring(0, 500)}`);
+    console.error('[VISION] Error response:', errorText);
+    throw new Error(`Vision API Error (${response.status}): ${errorText.substring(0, 500)}`);
   }
   
-  return await response.json();
+  const result = await response.json();
+  console.log('[VISION] Response received, content length:', result.choices?.[0]?.message?.content?.length || 0);
+  
+  return result;
 }
 
 // Italian grade calculation
@@ -136,42 +117,11 @@ function calculateGrade(percentage: number): string {
   return "1-2 gravemente insufficiente";
 }
 
-// Get subject-specific instructions
-function getSubjectInstructions(subject: string): string {
-  const instructions: Record<string, string> = {
-    'italiano': 'Valuta la correttezza grammaticale, la sintassi, l\'ortografia e la qualità espositiva.',
-    'matematica': 'Valuta la correttezza dei calcoli, la logica di risoluzione e l\'applicazione delle formule.',
-    'storia': 'Valuta la conoscenza degli eventi storici e la capacità di contestualizzazione.',
-    'geografia': 'Valuta la conoscenza geografica e la capacità di localizzazione.',
-    'scienze': 'Valuta la conoscenza scientifica e la comprensione dei fenomeni.',
-    'inglese': 'Valuta la correttezza grammaticale e il vocabolario.',
-  };
-  return instructions[subject] || 'Valuta la correttezza delle risposte.';
-}
-
-// Get test type instructions
-function getTestTypeInstructions(testType: string): string {
-  const instructions: Record<string, string> = {
-    'aperte': 'Le domande sono a risposta aperta. Valuta completezza e accuratezza.',
-    'chiuse': 'Le domande sono a risposta chiusa. Valuta la correttezza della risposta.',
-    'miste': 'La verifica contiene domande aperte e chiuse.',
-    'dettato': 'Valuta la correttezza ortografica e la punteggiatura.',
-    'problemi': 'Valuta il procedimento risolutivo e i calcoli.',
-    'comprensione': 'Valuta la capacità di comprendere e interpretare il testo.',
-    'riassunto': 'Valuta la capacità di sintetizzare.',
-  };
-  return instructions[testType] || 'Valuta le risposte.';
-}
-
 // Initialize Express
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middleware
-app.use(cors({
-  origin: process.env.FRONTEND_URL || '*',
-  credentials: true
-}));
+app.use(cors({ origin: process.env.FRONTEND_URL || '*', credentials: true }));
 app.use(express.json({ limit: '50mb' }));
 
 // Health check
@@ -179,57 +129,38 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Debug endpoint - test API connection
+// Debug endpoint
 app.get('/debug', async (req, res) => {
   const { apiKey, baseUrl } = getApiConfig();
   
-  let testResults: any[] = [];
+  let chatWorks = false;
+  let visionWorks = false;
+  let chatError = null;
+  let visionError = null;
   
-  // Test only the relevant endpoints
-  const endpoints = [
-    `${baseUrl}/v4/chat/completions`,  // We know this works for chat
-  ];
-  
-  // Test chat endpoint
-  for (const endpoint of endpoints) {
-    try {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey || 'test'}`
-        },
-        body: JSON.stringify({ 
-          messages: [{ role: 'user', content: 'test' }],
-          max_tokens: 10
-        })
-      });
-      
-      const responseText = await response.text();
-      
-      testResults.push({
-        endpoint,
-        status: response.status,
-        working: response.ok,
-        responsePreview: responseText.substring(0, 200)
-      });
-    } catch (error) {
-      testResults.push({
-        endpoint,
-        status: 'error',
-        working: false,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
+  // Test chat
+  try {
+    const response = await fetch(`${baseUrl}/v4/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: 'Rispondi solo: ok' }],
+        max_tokens: 10
+      })
+    });
+    chatWorks = response.ok;
+    if (!response.ok) chatError = `Status ${response.status}`;
+  } catch (e) {
+    chatError = e instanceof Error ? e.message : String(e);
   }
   
-  // Test multimodal (vision) support on the chat endpoint
+  // Test vision with tiny image
   const testImage = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
-  
-  let visionSupport = { tested: false, supported: false, error: null };
-  
   try {
-    const visionResponse = await fetch(`${baseUrl}/v4/chat/completions`, {
+    const response = await fetch(`${baseUrl}/v4/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -239,173 +170,219 @@ app.get('/debug', async (req, res) => {
         messages: [{
           role: 'user',
           content: [
-            { type: 'text', text: 'Describe this image' },
+            { type: 'text', text: 'Rispondi solo: ok' },
             { type: 'image_url', image_url: { url: testImage } }
           ]
         }],
         max_tokens: 10
       })
     });
-    
-    visionSupport = {
-      tested: true,
-      supported: visionResponse.ok,
-      error: visionResponse.ok ? null : `Status ${visionResponse.status}`
-    };
-  } catch (error) {
-    visionSupport = {
-      tested: true,
-      supported: false,
-      error: error instanceof Error ? error.message : String(error)
-    };
+    visionWorks = response.ok;
+    if (!response.ok) visionError = `Status ${response.status}`;
+  } catch (e) {
+    visionError = e instanceof Error ? e.message : String(e);
   }
   
   res.json({
-    config: {
-      hasApiKey: !!apiKey,
-      apiKeyLength: apiKey?.length || 0,
-      baseUrl,
-      note: "Usare ZAI_BASE_URL senza /v4 alla fine (es: https://api.z.ai/api/paas)"
-    },
-    chatEndpoint: testResults,
-    visionSupport,
-    recommendation: visionSupport.supported 
-      ? "API supporta chat e vision - tutto ok!"
-      : "API supporta chat ma potrebbe non supportare vision. Verifica che la tua API key abbia accesso alla funzione vision.",
+    config: { hasApiKey: !!apiKey, apiKeyLength: apiKey?.length || 0, baseUrl },
+    chat: { works: chatWorks, error: chatError },
+    vision: { works: visionWorks, error: visionError },
+    recommendation: visionWorks 
+      ? "✅ Tutto funzionante!" 
+      : chatWorks 
+        ? "⚠️ Chat funziona ma Vision no - verifica che l'API supporti immagini"
+        : "❌ Né chat né vision funzionano - verifica API key e URL",
     timestamp: new Date().toISOString()
   });
 });
 
+// Test endpoint - returns raw AI response for debugging
+app.post('/api/test-vision', async (req, res) => {
+  try {
+    const { image } = req.body;
+    
+    if (!image) {
+      return res.status(400).json({ error: 'Immagine mancante' });
+    }
+    
+    console.log('[TEST] Testing vision with image...');
+    
+    const prompt = `Guarda questa immagine e descrivi esattamente cosa vedi.
+Elenca:
+1. Il tipo di documento (verifica, test, esercizio)
+2. Tutte le domande che riesci a leggere (numerate)
+3. Le risposte fornite dallo studente
+4. Il nome dello studente se presente
+
+Rispondi in italiano in modo dettagliato.`;
+
+    const response = await callVisionAPI(image, prompt);
+    const content = response.choices?.[0]?.message?.content;
+    
+    console.log('[TEST] Raw response:', content?.substring(0, 500));
+    
+    res.json({
+      success: true,
+      rawResponse: content,
+      responseLength: content?.length || 0
+    });
+    
+  } catch (error) {
+    console.error('[TEST] Error:', error);
+    res.status(500).json({
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
+
 // Main analysis endpoint
 app.post('/api/analyze', async (req, res) => {
-  console.log('[API] Ricevuta richiesta di analisi');
+  console.log('[ANALYZE] ========================================');
+  console.log('[ANALYZE] Ricevuta richiesta di analisi');
   
   try {
-    const body: AnalysisRequest = req.body;
-    const { image, subject, testType, customInstructions, maxScore } = body;
+    const { image, subject, testType, customInstructions, maxScore } = req.body;
 
-    // Validate input
+    // Validate
     if (!image) return res.status(400).json({ error: 'Immagine mancante' });
     if (!subject) return res.status(400).json({ error: 'Materia mancante' });
     if (!testType) return res.status(400).json({ error: 'Tipo di verifica mancante' });
 
-    console.log(`[API] Parametri: materia=${subject}, tipo=${testType}, maxScore=${maxScore}`);
+    console.log(`[ANALYZE] Materia: ${subject}, Tipo: ${testType}, MaxScore: ${maxScore}`);
 
-    // Step 1: Extract text using Vision API
-    console.log('[API] Step 1: Estrazione testo con Vision...');
-    
-    const extractionPrompt = `Analizza questa immagine di una verifica scolastica italiana. 
-Estrai il testo: nome studente, domande numerate, risposte dello studente.
-Rispondi SOLO in formato JSON senza markdown:
-{"studentName":"nome","questions":[{"number":1,"text":"domanda","studentAnswer":"risposta"}]}`;
+    // SINGLE comprehensive prompt - extracts AND evaluates in one shot
+    const analysisPrompt = `Sei un insegnante italiano esperto di ${subject}. Analizza questa immagine di una verifica scolastica.
 
-    let extractionResponse;
+ISTRUZIONI IMPORTANTI:
+1. Guarda attentamente l'immagine
+2. Identifica TUTTE le domande presenti (possono essere Vero/Falso, a risposta multipla, o aperte)
+3. Per ogni domanda, leggi la risposta data dallo studente
+4. Valuta se la risposta è corretta o no
+5. Il punteggio massimo totale è ${maxScore} punti
+
+TIPO DI VERIFICA: ${testType}
+
+Rispondi ESCLUSIVAMENTE con un JSON valido in questo formato esatto:
+{
+  "studentName": "nome dello studente o stringa vuota",
+  "totalQuestions": numero totale di domande trovate,
+  "questions": [
+    {
+      "number": 1,
+      "text": "testo completo della domanda",
+      "type": "vero_falso o multipla o aperta",
+      "studentAnswer": "risposta data dallo studente",
+      "correctAnswer": "risposta corretta",
+      "isCorrect": true o false,
+      "score": punti assegnati (calcolati proporzionalmente: ${maxScore} / numero domande),
+      "feedback": "feedback breve per lo studente"
+    }
+  ],
+  "overallFeedback": "commento generale sulla verifica",
+  "totalScore": punteggio totale assegnato
+}
+
+IMPORTANTE: 
+- Identifica TUTTE le domande, non solo una
+- Per i Vero/Falso, la risposta dello studente sarà "V" o "F" o "Vero" o "Falso"
+- Assegna punti in modo proporzionale
+- Se non riesci a leggere qualcosa, indicarlo nel feedback
+
+Analizza ora l'immagine e rispondi SOLO con il JSON.`;
+
+    let response;
     try {
-      extractionResponse = await callVisionAPI(image, extractionPrompt);
-      console.log('[API] Vision risposta ricevuta');
+      response = await callVisionAPI(image, analysisPrompt);
     } catch (visionError) {
-      console.error('[API] Errore Vision:', visionError);
+      console.error('[ANALYZE] Vision error:', visionError);
       return res.status(500).json({ 
-        error: 'Errore nell\'analisi dell\'immagine.',
+        error: 'Errore nell\'analisi dell\'immagine',
         details: visionError instanceof Error ? visionError.message : String(visionError)
       });
     }
 
-    const extractionResult = extractionResponse.choices?.[0]?.message?.content;
-    console.log('[API] Risposta Vision:', extractionResult?.substring(0, 200));
+    const rawContent = response.choices?.[0]?.message?.content;
+    console.log('[ANALYZE] Raw AI response (first 1000 chars):');
+    console.log(rawContent?.substring(0, 1000));
+    console.log('[ANALYZE] ========================================');
     
-    let extractedData: { studentName: string; questions: Array<{number: number; text: string; studentAnswer: string}> };
-    try {
-      const jsonMatch = extractionResult?.match(/\{[\s\S]*\}/);
-      extractedData = jsonMatch ? JSON.parse(jsonMatch[0]) : { studentName: '', questions: [{ number: 1, text: 'Verifica', studentAnswer: extractionResult || '' }] };
-    } catch {
-      extractedData = { studentName: '', questions: [{ number: 1, text: 'Verifica', studentAnswer: extractionResult || '' }] };
+    if (!rawContent) {
+      return res.status(500).json({ error: 'Nessuna risposta dall\'IA' });
     }
 
-    if (!extractedData.questions?.length) {
-      return res.status(400).json({ error: 'Nessuna domanda identificata.' });
+    // Parse JSON from response
+    let analysisResult: any;
+    try {
+      // Try to extract JSON from the response
+      const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        analysisResult = JSON.parse(jsonMatch[0]);
+      } else {
+        throw new Error('Nessun JSON trovato nella risposta');
+      }
+    } catch (parseError) {
+      console.error('[ANALYZE] JSON parse error:', parseError);
+      console.error('[ANALYZE] Response was:', rawContent);
+      return res.status(500).json({ 
+        error: 'Errore nel parsing della risposta AI',
+        rawResponse: rawContent.substring(0, 1000)
+      });
     }
 
-    // Step 2: Evaluate using Chat API
-    console.log('[API] Step 2: Valutazione con LLM...');
+    // Validate and build final result
+    if (!analysisResult.questions || !Array.isArray(analysisResult.questions)) {
+      console.error('[ANALYZE] Invalid structure:', analysisResult);
+      return res.status(500).json({ 
+        error: 'Struttura risposta non valida',
+        received: analysisResult
+      });
+    }
+
+    console.log(`[ANALYZE] Found ${analysisResult.questions.length} questions`);
+
+    // Build final questions array
+    const questionsPerScore = maxScore / (analysisResult.totalQuestions || analysisResult.questions.length || 1);
     
-    const questionsPerScore = maxScore / extractedData.questions.length;
-    const evaluationPrompt = `Sei un insegnante di ${subject}. Valuta questa verifica.
-${getSubjectInstructions(subject)}
-${getTestTypeInstructions(testType)}
-
-Domande dello studente:
-${extractedData.questions.map(q => `Domanda ${q.number}: ${q.text}\nRisposta: ${q.studentAnswer}`).join('\n\n')}
-
-Per ogni domanda, assegna un punteggio da 0 a ${questionsPerScore.toFixed(1)} e fornisci un feedback breve.
-Rispondi SOLO in formato JSON senza markdown:
-{"questions":[{"number":1,"score":punteggio,"correctAnswer":"risposta corretta se diversa","feedback":"feedback breve","isCorrect":true/false}],"overallFeedback":"commento generale"}`;
-
-    let evaluation;
-    try {
-      const evalResponse = await callChatAPI([
-        { role: 'system', content: 'Sei un insegnante esperto. Rispondi sempre in formato JSON valido.' },
-        { role: 'user', content: evaluationPrompt }
-      ], 0.3);
+    const finalQuestions: Question[] = analysisResult.questions.map((q: any, index: number) => {
+      const score = typeof q.score === 'number' ? q.score : (q.isCorrect ? questionsPerScore : 0);
       
-      const evalResult = evalResponse.choices?.[0]?.message?.content;
-      const jsonMatch = evalResult?.match(/\{[\s\S]*\}/);
-      evaluation = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
-    } catch (e) {
-      console.error('[API] Errore LLM:', e);
-      evaluation = null;
-    }
-
-    if (!evaluation) {
-      evaluation = {
-        questions: extractedData.questions.map(q => ({ 
-          number: q.number, 
-          score: questionsPerScore / 2, 
-          correctAnswer: '', 
-          feedback: 'Valutazione automatica', 
-          isCorrect: false 
-        })),
-        overallFeedback: 'Valutazione automatica generata.'
-      };
-    }
-
-    // Build result
-    const finalQuestions: Question[] = extractedData.questions.map((q, i) => {
-      const eq = evaluation.questions?.find((e: any) => e.number === q.number) || evaluation.questions?.[i] || {};
       return {
-        id: `q-${q.number}-${Date.now()}`,
-        number: q.number,
-        text: q.text,
+        id: `q-${q.number || index + 1}-${Date.now()}`,
+        number: q.number || index + 1,
+        text: q.text || `Domanda ${q.number || index + 1}`,
         studentAnswer: q.studentAnswer || '',
-        correctAnswer: eq.correctAnswer || '',
-        score: Math.min(Math.max(0, eq.score || questionsPerScore / 2), questionsPerScore),
+        correctAnswer: q.correctAnswer || '',
+        score: Math.min(Math.max(0, score), questionsPerScore),
         maxScore: questionsPerScore,
-        feedback: eq.feedback || 'Ok',
-        isCorrect: eq.isCorrect ?? true,
+        feedback: q.feedback || (q.isCorrect ? 'Corretto' : 'Non corretto'),
+        isCorrect: q.isCorrect ?? false,
         confirmed: null
       };
     });
 
-    const totalScore = finalQuestions.reduce((s, q) => s + q.score, 0);
+    // Calculate totals
+    const totalScore = analysisResult.totalScore || finalQuestions.reduce((sum, q) => sum + q.score, 0);
     const percentage = (totalScore / maxScore) * 100;
 
-    res.json({
-      result: {
-        studentName: extractedData.studentName || '',
-        subject: subject.charAt(0).toUpperCase() + subject.slice(1),
-        totalScore: Math.round(totalScore * 10) / 10,
-        maxScore,
-        percentage: Math.round(percentage * 10) / 10,
-        grade: calculateGrade(percentage),
-        questions: finalQuestions,
-        overallFeedback: evaluation.overallFeedback || 'Completato.'
-      }
-    });
+    const result = {
+      studentName: analysisResult.studentName || '',
+      subject: subject.charAt(0).toUpperCase() + subject.slice(1),
+      totalScore: Math.round(totalScore * 10) / 10,
+      maxScore,
+      percentage: Math.round(percentage * 10) / 10,
+      grade: calculateGrade(percentage),
+      questions: finalQuestions,
+      overallFeedback: analysisResult.overallFeedback || 'Analisi completata.'
+    };
+
+    console.log(`[ANALYZE] Result: ${finalQuestions.length} questions, score ${totalScore}/${maxScore} (${percentage.toFixed(1)}%)`);
+
+    res.json({ result });
 
   } catch (error) {
-    console.error('[API] Errore:', error);
+    console.error('[ANALYZE] Error:', error);
     res.status(500).json({
-      error: 'Errore durante l\'analisi.',
+      error: 'Errore durante l\'analisi',
       message: error instanceof Error ? error.message : 'Errore sconosciuto'
     });
   }
@@ -416,6 +393,6 @@ app.listen(PORT, () => {
   console.log(`🚀 Server avviato sulla porta ${PORT}`);
   console.log(`📍 Health: http://localhost:${PORT}/health`);
   console.log(`🔍 Debug: http://localhost:${PORT}/debug`);
-  console.log(`🔑 ZAI_API_KEY presente: ${!!process.env.ZAI_API_KEY}`);
-  console.log(`🌐 ZAI_BASE_URL: ${process.env.ZAI_BASE_URL || 'default: https://api.z.ai/api/paas/v4'}`);
+  console.log(`🔑 ZAI_API_KEY: ${!!process.env.ZAI_API_KEY ? 'presente' : 'MANCANTE'}`);
+  console.log(`🌐 ZAI_BASE_URL: ${process.env.ZAI_BASE_URL || 'default: https://api.z.ai/api/paas'}`);
 });
