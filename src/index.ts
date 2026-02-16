@@ -226,79 +226,114 @@ app.post('/api/test-vision', async (req, res) => {
     console.log('[TEST] Image length:', image?.length || 0);
     console.log('[TEST] Image starts with:', image?.substring(0, 50));
     
-    const prompt = `Guarda questa immagine e descrivi esattamente cosa vedi.
-Elenca:
-1. Il tipo di documento (verifica, test, esercizio)
-2. Tutte le domande che riesci a leggere (numerate)
-3. Le risposte fornite dallo studente
-4. Il nome dello studente se presente
-
-Rispondi in italiano in modo dettagliato.`;
+    // Try different image formats
+    let imageToSend = image;
+    let imageFormat = 'original';
+    
+    // If it's a data URL, extract just the base64 part
+    if (image.startsWith('data:image')) {
+      const base64Match = image.match(/base64,(.+)/);
+      if (base64Match) {
+        imageToSend = base64Match[1];
+        imageFormat = 'base64-only';
+        console.log('[TEST] Extracted base64, length:', imageToSend.length);
+      }
+    }
+    
+    const prompt = `Guarda questa immagine e descrivi esattamente cosa vedi. Rispondi in italiano.`;
 
     const endpoint = `${baseUrl}/v4/chat/completions`;
     
-    const requestBody = {
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: prompt },
-          { type: 'image_url', image_url: { url: image } }
-        ]
-      }],
-      max_tokens: 4096
-    };
-    
-    console.log('[TEST] Calling:', endpoint);
-    
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
+    // Try multiple request formats
+    const formats = [
+      // Format 1: Standard OpenAI multimodal with data URL
+      {
+        name: 'openai-data-url',
+        body: {
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'text', text: prompt },
+              { type: 'image_url', image_url: { url: image } }
+            ]
+          }],
+          max_tokens: 1000
+        }
       },
-      body: JSON.stringify(requestBody)
-    });
+      // Format 2: Base64 only in image_url
+      {
+        name: 'base64-in-image-url',
+        body: {
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'text', text: prompt },
+              { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageToSend}` } }
+            ]
+          }],
+          max_tokens: 1000
+        }
+      },
+      // Format 3: Simple text message (no image) - to verify API works
+      {
+        name: 'text-only-test',
+        body: {
+          messages: [{
+            role: 'user',
+            content: prompt + ' (TEST: rispondi solo OK)'
+          }],
+          max_tokens: 100
+        }
+      }
+    ];
     
-    const responseText = await response.text();
-    console.log('[TEST] Response status:', response.status);
-    console.log('[TEST] Response body (first 1000 chars):', responseText.substring(0, 1000));
+    const results = [];
     
-    if (!response.ok) {
-      return res.json({
-        success: false,
-        error: `API Error (${response.status})`,
-        details: responseText.substring(0, 1000),
-        endpoint: endpoint
-      });
+    for (const format of formats) {
+      console.log(`[TEST] Trying format: ${format.name}`);
+      
+      try {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify(format.body)
+        });
+        
+        const responseText = await response.text();
+        let parsed;
+        try { parsed = JSON.parse(responseText); } catch { parsed = null; }
+        
+        const content = parsed?.choices?.[0]?.message?.content;
+        
+        results.push({
+          format: format.name,
+          status: response.status,
+          hasContent: !!content,
+          contentLength: content?.length || 0,
+          contentPreview: content?.substring(0, 200) || 'EMPTY',
+          isError: !response.ok
+        });
+        
+        console.log(`[TEST] ${format.name}: status=${response.status}, content=${content?.length || 0} chars`);
+        
+      } catch (err) {
+        results.push({
+          format: format.name,
+          error: err instanceof Error ? err.message : String(err)
+        });
+      }
     }
     
-    let result;
-    try {
-      result = JSON.parse(responseText);
-    } catch (e) {
-      return res.json({
-        success: false,
-        error: 'Failed to parse JSON response',
-        rawResponse: responseText.substring(0, 1000)
-      });
-    }
-    
-    const content = result.choices?.[0]?.message?.content;
-    console.log('[TEST] Content length:', content?.length || 0);
-    console.log('[TEST] Content preview:', content?.substring(0, 300));
-    console.log('[TEST] Full result:', JSON.stringify(result, null, 2));
     console.log('[TEST] ========================================');
     
     res.json({
       success: true,
-      rawResponse: content,
-      responseLength: content?.length || 0,
-      // Show the FULL API response for debugging
-      fullResult: JSON.stringify(result, null, 2),
-      choicesCount: result.choices?.length || 0,
-      hasMessage: !!result.choices?.[0]?.message,
-      messageKeys: result.choices?.[0]?.message ? Object.keys(result.choices[0].message) : [],
-      usage: result.usage
+      results: results,
+      imageFormat: imageFormat,
+      endpoint: endpoint
     });
     
   } catch (error) {
