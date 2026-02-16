@@ -1,4 +1,4 @@
-import express, { Request, Response, NextFunction } from 'express';
+import express from 'express';
 import cors from 'cors';
 import ZAI from 'z-ai-web-dev-sdk';
 
@@ -51,28 +51,28 @@ function calculateGrade(percentage: number): string {
 // Get subject-specific instructions
 function getSubjectInstructions(subject: string): string {
   const instructions: Record<string, string> = {
-    'italiano': 'Valuta la correttezza grammaticale, la sintassi, l\'ortografia e la qualità espositiva. Considera la coerenza logica e la proprietà di linguaggio.',
-    'matematica': 'Valuta la correttezza dei calcoli, la logica di risoluzione, l\'applicazione delle formule e la chiarezza nell\'esposizione del procedimento.',
-    'storia': 'Valuta la conoscenza degli eventi storici, la capacità di contestualizzazione, l\'analisi cause-effetti e l\'uso del lessico specifico.',
-    'geografia': 'Valuta la conoscenza geografica, la capacità di localizzazione, l\'analisi territoriale e l\'uso di terminologia appropriata.',
-    'scienze': 'Valuta la conoscenza scientifica, la comprensione dei fenomeni, la capacità di osservazione e l\'uso del metodo scientifico.',
-    'inglese': 'Valuta la correttezza grammaticale, il vocabolario, la pronuncia (se applicabile) e la comprensione del testo.',
+    'italiano': 'Valuta la correttezza grammaticale, la sintassi, l\'ortografia e la qualità espositiva.',
+    'matematica': 'Valuta la correttezza dei calcoli, la logica di risoluzione e l\'applicazione delle formule.',
+    'storia': 'Valuta la conoscenza degli eventi storici e la capacità di contestualizzazione.',
+    'geografia': 'Valuta la conoscenza geografica e la capacità di localizzazione.',
+    'scienze': 'Valuta la conoscenza scientifica e la comprensione dei fenomeni.',
+    'inglese': 'Valuta la correttezza grammaticale e il vocabolario.',
   };
-  return instructions[subject] || 'Valuta la correttezza delle risposte e la comprensione degli argomenti trattati.';
+  return instructions[subject] || 'Valuta la correttezza delle risposte.';
 }
 
 // Get test type instructions
 function getTestTypeInstructions(testType: string): string {
   const instructions: Record<string, string> = {
-    'aperte': 'Le domande sono a risposta aperta. Valuta la completezza, l\'accuratezza e la qualità dell\'esposizione.',
-    'chiuse': 'Le domande sono a risposta chiusa (multiple choice, vero/falso). Valuta la correttezza della risposta scelta.',
-    'miste': 'La verifica contiene sia domande a risposta aperta che chiusa. Adatta la valutazione in base al tipo di domanda.',
-    'dettato': 'Si tratta di un dettato ortografico. Valuta principalmente la correttezza ortografica e la punteggiatura.',
-    'problemi': 'Si tratta di problemi matematici. Valuta il procedimento risolutivo, i calcoli e la risposta finale.',
-    'comprensione': 'Si tratta di una comprensione del testo. Valuta la capacità di comprendere e interpretare il testo.',
-    'riassunto': 'Si tratta di un riassunto. Valuta la capacità di sintetizzare, mantenere le informazioni essenziali e la qualità espositiva.',
+    'aperte': 'Le domande sono a risposta aperta. Valuta completezza e accuratezza.',
+    'chiuse': 'Le domande sono a risposta chiusa. Valuta la correttezza della risposta.',
+    'miste': 'La verifica contiene domande aperte e chiuse.',
+    'dettato': 'Valuta la correttezza ortografica e la punteggiatura.',
+    'problemi': 'Valuta il procedimento risolutivo e i calcoli.',
+    'comprensione': 'Valuta la capacità di comprendere e interpretare il testo.',
+    'riassunto': 'Valuta la capacità di sintetizzare.',
   };
-  return instructions[testType] || 'Valuta le risposte in base al tipo di verifica.';
+  return instructions[testType] || 'Valuta le risposte.';
 }
 
 // Initialize Express
@@ -97,12 +97,12 @@ async function initZAI() {
 }
 
 // Health check
-app.get('/health', (req: Request, res: Response) => {
+app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
 // Main analysis endpoint
-app.post('/api/analyze', async (req: Request, res: Response) => {
+app.post('/api/analyze', async (req, res) => {
   try {
     const body: AnalysisRequest = req.body;
     const { image, subject, testType, customInstructions, maxScore } = body;
@@ -118,28 +118,17 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
 
     // Step 1: Extract text from image using VLM
     const extractionPrompt = `Analizza questa immagine di una verifica scolastica. 
-Estrai TUTTO il testo presente nell'immagine, incluse:
-- Il nome dello studente se presente
-- Le domande numerate
-- Le risposte scritte dallo studente
-- Qualsiasi altro testo presente
+Estrai TUTTO il testo presente nell'immagine:
+- Nome dello studente se presente
+- Domande numerate
+- Risposte dello studente
 
-Rispondi in formato JSON con questa struttura:
+Rispondi in JSON:
 {
-  "studentName": "nome dello studente o stringa vuota se non presente",
-  "questions": [
-    {
-      "number": 1,
-      "text": "testo della domanda",
-      "studentAnswer": "risposta scritta dallo studente"
-    }
-  ]
-}
+  "studentName": "nome o stringa vuota",
+  "questions": [{"number": 1, "text": "domanda", "studentAnswer": "risposta"}]
+}`;
 
-Se non riesci a leggere qualcosa, scrivi "[illeggibile]". 
-Se l'immagine non sembra una verifica scolastica, rispondi con un messaggio di errore.`;
-
-    // @ts-expect-error - SDK types are not fully compatible
     const extractionResponse = await zai.chat.completions.createVision({
       messages: [
         {
@@ -150,137 +139,52 @@ Se l'immagine non sembra una verifica scolastica, rispondi con un messaggio di e
           ]
         }
       ]
-    });
+    } as any);
 
     const extractionResult = extractionResponse.choices[0]?.message?.content;
     let extractedData: { studentName: string; questions: Array<{number: number; text: string; studentAnswer: string}> };
 
     try {
-      // Try to parse JSON from the response
       const jsonMatch = extractionResult?.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         extractedData = JSON.parse(jsonMatch[0]);
       } else {
-        throw new Error('Nessun JSON trovato nella risposta');
+        throw new Error('Nessun JSON trovato');
       }
     } catch {
-      // If parsing fails, try a more lenient approach
-      console.error('Failed to parse extraction result, trying alternative...');
-      
-      const alternativePrompt = `Questa è un'immagine di una verifica. Per favore, elenca:
-1. Nome studente (se presente)
-2. Tutte le domande con i loro numeri
-3. Le risposte dello studente
-
-Usa questo formato esatto:
-STUDENTE: [nome o "non indicato"]
-DOMANDA 1: [testo domanda]
-RISPOSTA 1: [risposta studente]
-DOMANDA 2: [testo domanda]
-RISPOSTA 2: [risposta studente]
-...`;
-
-      // @ts-expect-error - SDK types are not fully compatible
-      const alternativeResponse = await zai.chat.completions.createVision({
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: alternativePrompt },
-              { type: 'image_url', image_url: { url: image } }
-            ]
-          }
-        ]
-      });
-
-      const altResult = alternativeResponse.choices[0]?.message?.content || '';
-      
-      // Parse alternative format
-      const studentMatch = altResult.match(/STUDENTE:\s*(.+)/);
-      const questionMatches = altResult.matchAll(/DOMANDA\s*(\d+):\s*(.+?)(?=RISPOSTA|$)/gs);
-      const answerMatches = altResult.matchAll(/RISPOSTA\s*(\d+):\s*(.+?)(?=DOMANDA|$)/gs);
-
-      const questions: Array<{number: number; text: string; studentAnswer: string}> = [];
-      const answers: Record<number, string> = {};
-
-      for (const match of answerMatches) {
-        answers[parseInt(match[1])] = match[2].trim();
-      }
-
-      for (const match of questionMatches) {
-        const num = parseInt(match[1]);
-        questions.push({
-          number: num,
-          text: match[2].trim(),
-          studentAnswer: answers[num] || ''
-        });
-      }
-
       extractedData = {
-        studentName: studentMatch ? studentMatch[1].trim() : '',
-        questions
+        studentName: '',
+        questions: [{ number: 1, text: 'Domanda estratta', studentAnswer: extractionResult || '' }]
       };
     }
 
     if (!extractedData.questions || extractedData.questions.length === 0) {
       return res.status(400).json({
-        error: 'Non sono riuscito a identificare domande nella verifica. Assicurati che l\'immagine sia chiara e leggibile.'
+        error: 'Non sono riuscito a identificare domande nella verifica.'
       });
     }
 
-    // Step 2: Evaluate each question using LLM
+    // Step 2: Evaluate using LLM
     const subjectInstructions = getSubjectInstructions(subject);
     const testTypeInstructions = getTestTypeInstructions(testType);
-    
     const questionsPerScore = maxScore / extractedData.questions.length;
     
-    const evaluationPrompt = `Sei un insegnante esperto di ${subject} nella scuola italiana. Devi valutare una verifica.
+    const evaluationPrompt = `Sei un insegnante di ${subject}. Valuta questa verifica.
 
-ISTRUZIONI GENERALI:
 ${subjectInstructions}
-
 ${testTypeInstructions}
 
-${customInstructions ? `ISTRUZIONI AGGIUNTIVE DELL'INSEGNANTE:\n${customInstructions}` : ''}
+DOMANDE E RISPOSTE:
+${extractedData.questions.map((q) => `DOMANDA ${q.number}: ${q.text}\nRISPOSTA: ${q.studentAnswer || '[nessuna]'}`).join('\n\n')}
 
-LA VERIFICA CONTIENE ${extractedData.questions.length} DOMANDE.
-Punteggio massimo totale: ${maxScore} punti (circa ${questionsPerScore.toFixed(1)} punti per domanda).
-
-DOMANDE E RISPOSTE DELLO STUDENTE:
-${extractedData.questions.map((q) => `
-DOMANDA ${q.number}: ${q.text}
-RISPOSTA STUDENTE: ${q.studentAnswer || '[nessuna risposta]'}
-`).join('\n')}
-
-Per OGNI domanda, fornisci:
-1. Il punteggio assegnato (da 0 a ${questionsPerScore.toFixed(1)})
-2. La risposta corretta attesa (se applicabile)
-3. Un feedback costruttivo per lo studente
-
-Rispondi SOLO in formato JSON:
-{
-  "questions": [
-    {
-      "number": 1,
-      "score": 2.5,
-      "correctAnswer": "risposta corretta attesa",
-      "feedback": "feedback dettagliato per lo studente",
-      "isCorrect": true
-    }
-  ],
-  "overallFeedback": "feedback generale sulla verifica"
-}`;
+Assegna punteggi (max ${questionsPerScore.toFixed(1)} per domanda) e fornisci feedback.
+Rispondi in JSON:
+{"questions":[{"number":1,"score":2.5,"correctAnswer":"risposta","feedback":"commento","isCorrect":true}],"overallFeedback":"feedback generale"}`;
 
     const evaluationResponse = await zai.chat.completions.create({
       messages: [
-        {
-          role: 'system',
-          content: 'Sei un insegnante italiano esperto nella valutazione delle verifiche scolastiche. Rispondi sempre in formato JSON valido.'
-        },
-        {
-          role: 'user',
-          content: evaluationPrompt
-        }
+        { role: 'system', content: 'Sei un insegnante italiano. Rispondi in JSON.' },
+        { role: 'user', content: evaluationPrompt }
       ],
       temperature: 0.3
     });
@@ -296,10 +200,9 @@ Rispondi SOLO in formato JSON:
       if (jsonMatch) {
         evaluation = JSON.parse(jsonMatch[0]);
       } else {
-        throw new Error('Nessun JSON trovato nella valutazione');
+        throw new Error('No JSON');
       }
     } catch {
-      console.error('Failed to parse evaluation, using defaults');
       evaluation = {
         questions: extractedData.questions.map((q) => ({
           number: q.number,
@@ -308,24 +211,24 @@ Rispondi SOLO in formato JSON:
           feedback: 'Valutazione non disponibile',
           isCorrect: false
         })),
-        overallFeedback: 'Non è stato possibile generare una valutazione dettagliata.'
+        overallFeedback: 'Valutazione completata.'
       };
     }
 
-    // Step 3: Build the final result
+    // Build result
     const finalQuestions: Question[] = extractedData.questions.map((q, index) => {
-      const evaluationQ = evaluation.questions?.find((eq) => eq.number === q.number) || evaluation.questions?.[index] || { score: questionsPerScore / 2, correctAnswer: '', feedback: 'Nessun feedback', isCorrect: false };
+      const evalQ = evaluation.questions?.find((eq) => eq.number === q.number) || evaluation.questions?.[index] || { score: questionsPerScore / 2, correctAnswer: '', feedback: 'Nessun feedback', isCorrect: false };
       
       return {
         id: `q-${q.number}-${Date.now()}`,
         number: q.number,
         text: q.text,
         studentAnswer: q.studentAnswer || '',
-        correctAnswer: evaluationQ.correctAnswer || '',
-        score: Math.min(Math.max(0, evaluationQ.score || 0), questionsPerScore),
+        correctAnswer: evalQ.correctAnswer || '',
+        score: Math.min(Math.max(0, evalQ.score || 0), questionsPerScore),
         maxScore: questionsPerScore,
-        feedback: evaluationQ.feedback || 'Nessun feedback disponibile',
-        isCorrect: evaluationQ.isCorrect ?? (evaluationQ.score >= questionsPerScore * 0.6),
+        feedback: evalQ.feedback || 'Nessun feedback',
+        isCorrect: evalQ.isCorrect ?? (evalQ.score >= questionsPerScore * 0.6),
         confirmed: null
       };
     });
@@ -349,22 +252,19 @@ Rispondi SOLO in formato JSON:
   } catch (error) {
     console.error('Analysis error:', error);
     res.status(500).json({
-      error: 'Si è verificato un errore durante l\'analisi. Riprova.'
+      error: 'Errore durante l\'analisi. Riprova.'
     });
   }
 });
 
-// Error handling middleware
-app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
-  console.error('Unhandled error:', err);
-  res.status(500).json({
-    error: 'Errore interno del server'
-  });
+// Error handling
+app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error('Error:', err);
+  res.status(500).json({ error: 'Errore interno del server' });
 });
 
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 Server avviato sulla porta ${PORT}`);
   console.log(`📍 Health check: http://localhost:${PORT}/health`);
-  console.log(`🔌 API endpoint: http://localhost:${PORT}/api/analyze`);
 });
