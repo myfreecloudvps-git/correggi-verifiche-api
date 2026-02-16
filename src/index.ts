@@ -56,7 +56,7 @@ const safetySettings = [
 ];
 
 // Helper to get model
-function getModel(modelName: string = 'gemini-1.5-flash') {
+function getModel(modelName: string = 'gemini-flash-latest') {
   return genAI.getGenerativeModel({ model: modelName, safetySettings });
 }
 
@@ -169,7 +169,7 @@ app.post('/api/test-vision', async (req, res) => {
     const prompt = `Guarda questa immagine e descrivi esattamente cosa vedi. Rispondi in italiano.`;
 
     // Try different models if available, but primarily flash
-    const modelName = 'gemini-1.5-flash';
+    const modelName = 'gemini-flash-latest';
     const model = getModel(modelName);
 
     console.log(`[TEST] Calling model: ${modelName}`);
@@ -276,7 +276,7 @@ IMPORTANTE:
 - Non includere markdown tipo \`\`\`json o \`\`\`. Restituisci SOLO il JSON puro.`;
 
     // Call Gemini
-    const model = getModel('gemini-1.5-flash'); // Using flash for speed, switch to pro if better reasoning needed
+    const model = getModel('gemini-flash-latest'); // Using flash for speed, switch to pro if better reasoning needed
 
     console.log('[ANALYZE] Calling Gemini...');
 
