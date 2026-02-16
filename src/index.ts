@@ -35,6 +35,26 @@ interface CorrectionResult {
   overallFeedback: string;
 }
 
+// Vision message content types
+interface TextContent {
+  type: 'text';
+  text: string;
+}
+
+interface ImageUrlContent {
+  type: 'image_url';
+  image_url: {
+    url: string;
+  };
+}
+
+type VisionContent = TextContent | ImageUrlContent;
+
+interface VisionMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: VisionContent[];
+}
+
 // Italian grade calculation
 function calculateGrade(percentage: number): string {
   if (percentage >= 95) return "10 eccellente";
@@ -139,20 +159,23 @@ Rispondi in formato JSON con questa struttura:
 Se non riesci a leggere qualcosa, scrivi "[illeggibile]". 
 Se l'immagine non sembra una verifica scolastica, rispondi con un messaggio di errore.`;
 
+    // Build vision message content with explicit typing
+    const visionContent: VisionContent[] = [
+      { type: 'text', text: extractionPrompt },
+      { type: 'image_url', image_url: { url: image } }
+    ];
+
     const extractionResponse = await zai.chat.completions.createVision({
       messages: [
         {
           role: 'user',
-          content: [
-            { type: 'text', text: extractionPrompt },
-            { type: 'image_url', image_url: { url: image } }
-          ]
+          content: visionContent
         }
-      ],
+      ]
     });
 
     const extractionResult = extractionResponse.choices[0]?.message?.content;
-    let extractedData;
+    let extractedData: { studentName: string; questions: Array<{number: number; text: string; studentAnswer: string}> };
 
     try {
       // Try to parse JSON from the response
@@ -179,16 +202,19 @@ DOMANDA 2: [testo domanda]
 RISPOSTA 2: [risposta studente]
 ...`;
 
+      // Build vision message content with explicit typing
+      const altVisionContent: VisionContent[] = [
+        { type: 'text', text: alternativePrompt },
+        { type: 'image_url', image_url: { url: image } }
+      ];
+
       const alternativeResponse = await zai.chat.completions.createVision({
         messages: [
           {
             role: 'user',
-            content: [
-              { type: 'text', text: alternativePrompt },
-              { type: 'image_url', image_url: { url: image } }
-            ]
+            content: altVisionContent
           }
-        ],
+        ]
       });
 
       const altResult = alternativeResponse.choices[0]?.message?.content || '';
@@ -198,7 +224,7 @@ RISPOSTA 2: [risposta studente]
       const questionMatches = altResult.matchAll(/DOMANDA\s*(\d+):\s*(.+?)(?=RISPOSTA|$)/gs);
       const answerMatches = altResult.matchAll(/RISPOSTA\s*(\d+):\s*(.+?)(?=DOMANDA|$)/gs);
 
-      const questions: Array<{number: number, text: string, studentAnswer: string}> = [];
+      const questions: Array<{number: number; text: string; studentAnswer: string}> = [];
       const answers: Record<number, string> = {};
 
       for (const match of answerMatches) {
@@ -245,7 +271,7 @@ LA VERIFICA CONTIENE ${extractedData.questions.length} DOMANDE.
 Punteggio massimo totale: ${maxScore} punti (circa ${questionsPerScore.toFixed(1)} punti per domanda).
 
 DOMANDE E RISPOSTE DELLO STUDENTE:
-${extractedData.questions.map((q: {number: number, text: string, studentAnswer: string}) => `
+${extractedData.questions.map((q) => `
 DOMANDA ${q.number}: ${q.text}
 RISPOSTA STUDENTE: ${q.studentAnswer || '[nessuna risposta]'}
 `).join('\n')}
@@ -284,7 +310,10 @@ Rispondi SOLO in formato JSON:
     });
 
     const evaluationResult = evaluationResponse.choices[0]?.message?.content;
-    let evaluation;
+    let evaluation: { 
+      questions: Array<{number: number; score: number; correctAnswer: string; feedback: string; isCorrect: boolean}>;
+      overallFeedback: string;
+    };
 
     try {
       const jsonMatch = evaluationResult?.match(/\{[\s\S]*\}/);
@@ -296,7 +325,7 @@ Rispondi SOLO in formato JSON:
     } catch {
       console.error('Failed to parse evaluation, using defaults');
       evaluation = {
-        questions: extractedData.questions.map((q: {number: number, text: string, studentAnswer: string}) => ({
+        questions: extractedData.questions.map((q) => ({
           number: q.number,
           score: questionsPerScore / 2,
           correctAnswer: '',
@@ -308,8 +337,8 @@ Rispondi SOLO in formato JSON:
     }
 
     // Step 3: Build the final result
-    const finalQuestions: Question[] = extractedData.questions.map((q: {number: number, text: string, studentAnswer: string}, index: number) => {
-      const evaluationQ = evaluation.questions?.find((eq: {number: number}) => eq.number === q.number) || evaluation.questions?.[index] || {};
+    const finalQuestions: Question[] = extractedData.questions.map((q, index) => {
+      const evaluationQ = evaluation.questions?.find((eq) => eq.number === q.number) || evaluation.questions?.[index] || { score: questionsPerScore / 2, correctAnswer: '', feedback: 'Nessun feedback', isCorrect: false };
       
       return {
         id: `q-${q.number}-${Date.now()}`,
