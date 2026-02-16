@@ -246,41 +246,52 @@ app.post('/api/test-vision', async (req, res) => {
     
     // Try multiple request formats
     const formats = [
-      // Format 1: Standard OpenAI multimodal with data URL
+      // Format 1: With model specified
       {
-        name: 'openai-data-url',
+        name: 'with-model-gpt4',
+        body: {
+          model: 'gpt-4',
+          messages: [{
+            role: 'user',
+            content: 'Rispondi solo: OK'
+          }],
+          max_tokens: 10
+        }
+      },
+      // Format 2: With model gpt-4o
+      {
+        name: 'with-model-gpt4o',
+        body: {
+          model: 'gpt-4o',
+          messages: [{
+            role: 'user',
+            content: 'Rispondi solo: OK'
+          }],
+          max_tokens: 10
+        }
+      },
+      // Format 3: Without model
+      {
+        name: 'no-model',
         body: {
           messages: [{
             role: 'user',
+            content: 'Rispondi solo: OK'
+          }],
+          max_tokens: 10
+        }
+      },
+      // Format 4: With image and model
+      {
+        name: 'vision-with-model',
+        body: {
+          model: 'gpt-4o',
+          messages: [{
+            role: 'user',
             content: [
-              { type: 'text', text: prompt },
+              { type: 'text', text: 'Descrivi questa immagine' },
               { type: 'image_url', image_url: { url: image } }
             ]
-          }],
-          max_tokens: 1000
-        }
-      },
-      // Format 2: Base64 only in image_url
-      {
-        name: 'base64-in-image-url',
-        body: {
-          messages: [{
-            role: 'user',
-            content: [
-              { type: 'text', text: prompt },
-              { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageToSend}` } }
-            ]
-          }],
-          max_tokens: 1000
-        }
-      },
-      // Format 3: Simple text message (no image) - to verify API works
-      {
-        name: 'text-only-test',
-        body: {
-          messages: [{
-            role: 'user',
-            content: prompt + ' (TEST: rispondi solo OK)'
           }],
           max_tokens: 100
         }
