@@ -190,7 +190,6 @@ RISPOSTA 2: [risposta studente]
             ]
           }
         ],
-        thinking: { type: 'disabled' }
       });
 
       const altResult = alternativeResponse.choices[0]?.message?.content || '';
