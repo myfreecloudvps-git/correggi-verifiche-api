@@ -139,7 +139,7 @@ Rispondi in formato JSON con questa struttura:
 Se non riesci a leggere qualcosa, scrivi "[illeggibile]". 
 Se l'immagine non sembra una verifica scolastica, rispondi con un messaggio di errore.`;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // @ts-expect-error - SDK types are not fully compatible
     const extractionResponse = await zai.chat.completions.createVision({
       messages: [
         {
@@ -150,7 +150,7 @@ Se l'immagine non sembra una verifica scolastica, rispondi con un messaggio di e
           ]
         }
       ]
-    } as any);
+    });
 
     const extractionResult = extractionResponse.choices[0]?.message?.content;
     let extractedData: { studentName: string; questions: Array<{number: number; text: string; studentAnswer: string}> };
@@ -180,7 +180,7 @@ DOMANDA 2: [testo domanda]
 RISPOSTA 2: [risposta studente]
 ...`;
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // @ts-expect-error - SDK types are not fully compatible
       const alternativeResponse = await zai.chat.completions.createVision({
         messages: [
           {
@@ -191,7 +191,7 @@ RISPOSTA 2: [risposta studente]
             ]
           }
         ]
-      } as any);
+      });
 
       const altResult = alternativeResponse.choices[0]?.message?.content || '';
       
