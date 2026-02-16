@@ -1,5 +1,7 @@
 import express from 'express';
 import cors from 'cors';
+import fs from 'fs';
+import path from 'path';
 import ZAI from 'z-ai-web-dev-sdk';
 
 // Types
@@ -33,6 +35,44 @@ interface CorrectionResult {
   grade: string;
   questions: Question[];
   overallFeedback: string;
+}
+
+// Create ZAI config file from environment variables
+function createZaiConfig(): boolean {
+  const apiKey = process.env.ZAI_API_KEY;
+  const apiBaseUrl = process.env.ZAI_API_BASE_URL || 'https://api.z.ai';
+  
+  if (!apiKey) {
+    console.error('[CONFIG] ZAI_API_KEY non trovata nelle variabili d\'ambiente');
+    return false;
+  }
+  
+  const configPath = path.join(process.cwd(), '.z-ai-config');
+  const homeConfigPath = path.join(process.env.HOME || '/tmp', '.z-ai-config');
+  
+  const configContent = JSON.stringify({
+    apiKey: apiKey,
+    apiBaseUrl: apiBaseUrl
+  }, null, 2);
+  
+  try {
+    // Try to write in current directory
+    fs.writeFileSync(configPath, configContent);
+    console.log('[CONFIG] File .z-ai-config creato in:', configPath);
+    
+    // Also try home directory
+    try {
+      fs.writeFileSync(homeConfigPath, configContent);
+      console.log('[CONFIG] File .z-ai-config creato in:', homeConfigPath);
+    } catch (e) {
+      console.log('[CONFIG] Impossibile scrivere in home directory (non critico)');
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('[CONFIG] Errore creazione file config:', error);
+    return false;
+  }
 }
 
 // Italian grade calculation
@@ -92,6 +132,10 @@ let zaiInstance: Awaited<ReturnType<typeof ZAI.create>> | null = null;
 async function initZAI() {
   if (!zaiInstance) {
     console.log('[INIT] Inizializzazione ZAI SDK...');
+    
+    // Create config file if needed
+    createZaiConfig();
+    
     try {
       zaiInstance = await ZAI.create();
       console.log('[INIT] ZAI SDK inizializzato con successo');
@@ -108,27 +152,32 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Debug endpoint
+// Debug endpoint - shows environment status
 app.get('/debug', async (req, res) => {
+  const hasApiKey = !!process.env.ZAI_API_KEY;
+  const hasConfig = fs.existsSync(path.join(process.cwd(), '.z-ai-config'));
+  
+  let zaiStatus = 'not_initialized';
   try {
-    const zai = await initZAI();
-    res.json({ 
-      status: 'ZAI initialized', 
-      hasInstance: !!zai,
-      timestamp: new Date().toISOString() 
-    });
-  } catch (error) {
-    res.status(500).json({ 
-      status: 'ZAI initialization failed', 
-      error: error instanceof Error ? error.message : String(error)
-    });
+    await initZAI();
+    zaiStatus = 'initialized';
+  } catch (e) {
+    zaiStatus = `error: ${e instanceof Error ? e.message : String(e)}`;
   }
+  
+  res.json({ 
+    hasApiKey,
+    hasConfigFile: hasConfig,
+    zaiStatus,
+    homeDir: process.env.HOME,
+    cwd: process.cwd(),
+    timestamp: new Date().toISOString() 
+  });
 });
 
 // Main analysis endpoint
 app.post('/api/analyze', async (req, res) => {
   console.log('[API] Ricevuta richiesta di analisi');
-  console.log('[API] Body keys:', Object.keys(req.body));
   
   try {
     const body: AnalysisRequest = req.body;
@@ -136,15 +185,12 @@ app.post('/api/analyze', async (req, res) => {
 
     // Validate input
     if (!image) {
-      console.error('[API] Errore: immagine mancante');
       return res.status(400).json({ error: 'Immagine mancante' });
     }
     if (!subject) {
-      console.error('[API] Errore: materia mancante');
       return res.status(400).json({ error: 'Materia mancante' });
     }
     if (!testType) {
-      console.error('[API] Errore: tipo verifica mancante');
       return res.status(400).json({ error: 'Tipo di verifica mancante' });
     }
 
@@ -194,13 +240,13 @@ Rispondi ESCLUSIVAMENTE in formato JSON valido:
     } catch (vlmError) {
       console.error('[API] Errore VLM:', vlmError);
       return res.status(500).json({ 
-        error: 'Errore nell\'analisi dell\'immagine. L\'immagine potrebbe essere troppo grande o in un formato non supportato.',
+        error: 'Errore nell\'analisi dell\'immagine.',
         details: vlmError instanceof Error ? vlmError.message : String(vlmError)
       });
     }
 
     const extractionResult = extractionResponse.choices?.[0]?.message?.content;
-    console.log('[API] Risultato estrazione:', extractionResult?.substring(0, 200) + '...');
+    console.log('[API] Risultato estrazione (primi 200 char):', extractionResult?.substring(0, 200));
     
     let extractedData: { studentName: string; questions: Array<{number: number; text: string; studentAnswer: string}> };
 
@@ -208,13 +254,12 @@ Rispondi ESCLUSIVAMENTE in formato JSON valido:
       const jsonMatch = extractionResult?.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         extractedData = JSON.parse(jsonMatch[0]);
-        console.log('[API] JSON estratto correttamente, domande trovate:', extractedData.questions?.length || 0);
+        console.log('[API] JSON estratto, domande:', extractedData.questions?.length || 0);
       } else {
-        throw new Error('Nessun JSON trovato nella risposta VLM');
+        throw new Error('Nessun JSON trovato');
       }
     } catch (parseError) {
-      console.error('[API] Errore parsing JSON:', parseError);
-      // Fallback: crea una domanda con tutto il testo estratto
+      console.error('[API] Errore parsing JSON, uso fallback');
       extractedData = {
         studentName: '',
         questions: [{ 
@@ -226,9 +271,8 @@ Rispondi ESCLUSIVAMENTE in formato JSON valido:
     }
 
     if (!extractedData.questions || extractedData.questions.length === 0) {
-      console.error('[API] Nessuna domanda identificata');
       return res.status(400).json({
-        error: 'Non sono riuscito a identificare domande nella verifica. Assicurati che l\'immagine sia chiara e leggibile.'
+        error: 'Non sono riuscito a identificare domande nella verifica.'
       });
     }
 
@@ -239,45 +283,25 @@ Rispondi ESCLUSIVAMENTE in formato JSON valido:
     const testTypeInstructions = getTestTypeInstructions(testType);
     const questionsPerScore = maxScore / extractedData.questions.length;
     
-    const evaluationPrompt = `Sei un insegnante italiano esperto di ${subject}. Devi valutare questa verifica scolastica.
+    const evaluationPrompt = `Sei un insegnante italiano esperto di ${subject}. Valuta questa verifica.
 
-CRITERI DI VALUTAZIONE:
+CRITERI:
 ${subjectInstructions}
 ${testTypeInstructions}
 
-LA VERIFICA CONTIENE ${extractedData.questions.length} DOMANDE.
 Punteggio per domanda: ${questionsPerScore.toFixed(1)} punti.
 
-DOMANDE E RISPOSTE DELLO STUDENTE:
-${extractedData.questions.map((q) => `
-DOMANDA ${q.number}: ${q.text}
-RISPOSTA DELLO STUDENTE: ${q.studentAnswer || '[nessuna risposta fornita]'
-}`).join('\n')}
+DOMANDE E RISPOSTE:
+${extractedData.questions.map((q) => `DOMANDA ${q.number}: ${q.text}\nRISPOSTA: ${q.studentAnswer || '[nessuna]'}`).join('\n\n')}
 
-Per OGNI domanda fornisci:
-1. Un punteggio da 0 a ${questionsPerScore.toFixed(1)}
-2. La risposta corretta attesa (se applicabile)
-3. Un breve feedback costruttivo
-
-Rispondi ESCLUSIVAMENTE in formato JSON valido:
-{
-  "questions": [
-    {
-      "number": 1,
-      "score": 2.0,
-      "correctAnswer": "risposta corretta",
-      "feedback": "feedback per lo studente",
-      "isCorrect": true
-    }
-  ],
-  "overallFeedback": "commento generale sulla verifica"
-}`;
+Rispondi in JSON:
+{"questions":[{"number":1,"score":2.0,"correctAnswer":"risposta","feedback":"commento","isCorrect":true}],"overallFeedback":"commento generale"}`;
 
     let evaluationResponse;
     try {
       evaluationResponse = await zai.chat.completions.create({
         messages: [
-          { role: 'system', content: 'Sei un insegnante italiano esperto. Rispondi SEMPRE in formato JSON valido, senza testo aggiuntivo.' },
+          { role: 'system', content: 'Sei un insegnante italiano. Rispondi solo in JSON.' },
           { role: 'user', content: evaluationPrompt }
         ],
         temperature: 0.3
@@ -286,13 +310,12 @@ Rispondi ESCLUSIVAMENTE in formato JSON valido:
     } catch (llmError) {
       console.error('[API] Errore LLM:', llmError);
       return res.status(500).json({ 
-        error: 'Errore nella valutazione. Riprova.',
+        error: 'Errore nella valutazione.',
         details: llmError instanceof Error ? llmError.message : String(llmError)
       });
     }
 
     const evaluationResult = evaluationResponse.choices?.[0]?.message?.content;
-    console.log('[API] Risultato valutazione:', evaluationResult?.substring(0, 200) + '...');
     
     let evaluation: { 
       questions: Array<{number: number; score: number; correctAnswer: string; feedback: string; isCorrect: boolean}>;
@@ -303,12 +326,10 @@ Rispondi ESCLUSIVAMENTE in formato JSON valido:
       const jsonMatch = evaluationResult?.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         evaluation = JSON.parse(jsonMatch[0]);
-        console.log('[API] Valutazione JSON parsata correttamente');
       } else {
-        throw new Error('Nessun JSON nella valutazione');
+        throw new Error('No JSON');
       }
-    } catch (parseError) {
-      console.error('[API] Errore parsing valutazione, uso defaults:', parseError);
+    } catch {
       evaluation = {
         questions: extractedData.questions.map((q) => ({
           number: q.number,
@@ -317,13 +338,11 @@ Rispondi ESCLUSIVAMENTE in formato JSON valido:
           feedback: 'Valutazione automatica',
           isCorrect: false
         })),
-        overallFeedback: 'Valutazione completata con valori di default.'
+        overallFeedback: 'Valutazione completata.'
       };
     }
 
     // Build result
-    console.log('[API] Step 3: Costruzione risultato finale...');
-    
     const finalQuestions: Question[] = extractedData.questions.map((q, index) => {
       const evalQ = evaluation.questions?.find((eq) => eq.number === q.number) || evaluation.questions?.[index];
       
@@ -335,7 +354,7 @@ Rispondi ESCLUSIVAMENTE in formato JSON valido:
         correctAnswer: evalQ?.correctAnswer || '',
         score: Math.min(Math.max(0, evalQ?.score || questionsPerScore / 2), questionsPerScore),
         maxScore: questionsPerScore,
-        feedback: evalQ?.feedback || 'Nessun feedback disponibile',
+        feedback: evalQ?.feedback || 'Nessun feedback',
         isCorrect: evalQ?.isCorrect ?? ((evalQ?.score || 0) >= questionsPerScore * 0.6),
         confirmed: null
       };
@@ -355,36 +374,21 @@ Rispondi ESCLUSIVAMENTE in formato JSON valido:
       overallFeedback: evaluation.overallFeedback || 'Valutazione completata.'
     };
 
-    console.log('[API] Risultato finale:', JSON.stringify(result).substring(0, 300) + '...');
     console.log('[API] Analisi completata con successo!');
-
     res.json({ result });
 
   } catch (error) {
-    console.error('[API] Errore generico:', error);
-    console.error('[API] Stack trace:', error instanceof Error ? error.stack : 'N/A');
+    console.error('[API] Errore:', error);
     res.status(500).json({
-      error: 'Si è verificato un errore durante l\'analisi.',
-      message: error instanceof Error ? error.message : 'Errore sconosciuto',
-      timestamp: new Date().toISOString()
+      error: 'Errore durante l\'analisi.',
+      message: error instanceof Error ? error.message : 'Errore sconosciuto'
     });
   }
-});
-
-// Error handling
-app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error('[SERVER] Errore non gestito:', err);
-  console.error('[SERVER] Stack:', err.stack);
-  res.status(500).json({ 
-    error: 'Errore interno del server',
-    message: err.message 
-  });
 });
 
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 Server avviato sulla porta ${PORT}`);
-  console.log(`📍 Health check: http://localhost:${PORT}/health`);
+  console.log(`📍 Health: http://localhost:${PORT}/health`);
   console.log(`🔍 Debug: http://localhost:${PORT}/debug`);
-  console.log(`🔌 API endpoint: http://localhost:${PORT}/api/analyze`);
 });
