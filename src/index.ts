@@ -40,7 +40,9 @@ interface CorrectionResult {
 // Create .z-ai-config file with CORRECT format
 function createZaiConfigFile(): { success: boolean; error?: string } {
   const apiKey = process.env.ZAI_API_KEY;
-  const baseUrl = process.env.ZAI_BASE_URL || 'https://api.z.ai/v1';
+  // CORRECT baseUrl for z-ai-web-dev-sdk: https://api.z.ai/api/paas
+  // The SDK will append /v4/chat/completions for chat and /v4/chat/completions/vision for vision
+  const baseUrl = process.env.ZAI_BASE_URL || 'https://api.z.ai/api/paas';
   
   console.log('[CONFIG] Creazione file .z-ai-config...');
   console.log('[CONFIG] API Key presente:', !!apiKey);
@@ -193,7 +195,7 @@ app.get('/debug', async (req, res) => {
     environment: {
       hasApiKey: !!apiKey,
       apiKeyLength: apiKey?.length || 0,
-      baseUrl: baseUrl || 'non impostato (default: https://api.z.ai/v1)'
+      baseUrl: baseUrl || 'non impostato (default: https://api.z.ai/api/paas)'
     },
     configFile: {
       creationSuccess: configResult.success,
@@ -353,5 +355,5 @@ app.listen(PORT, () => {
   console.log(`📍 Health: http://localhost:${PORT}/health`);
   console.log(`🔍 Debug: http://localhost:${PORT}/debug`);
   console.log(`🔑 ZAI_API_KEY presente: ${!!process.env.ZAI_API_KEY}`);
-  console.log(`🌐 ZAI_BASE_URL: ${process.env.ZAI_BASE_URL || 'default: https://api.z.ai/v1'}`);
+  console.log(`🌐 ZAI_BASE_URL: ${process.env.ZAI_BASE_URL || 'default: https://api.z.ai/api/paas'}`);
 });
