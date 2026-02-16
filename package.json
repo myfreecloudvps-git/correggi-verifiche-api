@@ -2,12 +2,11 @@
   "name": "correggi-verifiche-backend",
   "version": "1.0.0",
   "description": "Backend API per CorreggiVerifiche AI",
-  "main": "dist/index.js",
+  "main": "src/index.ts",
   "type": "module",
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/index.js",
-    "dev": "tsx watch src/index.ts"
+    "build": "echo 'Build skipped - using tsx'",
+    "start": "npx tsx src/index.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",
