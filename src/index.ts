@@ -319,6 +319,11 @@ app.post('/api/analyze', async (req, res) => {
     if (!testType) return res.status(400).json({ error: 'Tipo di verifica mancante' });
 
     console.log(`[ANALYZE] Materia: ${subject}, Tipo: ${testType}, MaxScore: ${maxScore}`);
+    console.log(`[ANALYZE] Image length: ${image?.length || 0}`);
+    
+    const { apiKey, baseUrl } = getApiConfig();
+    console.log(`[ANALYZE] API Key present: ${!!apiKey}`);
+    console.log(`[ANALYZE] Base URL: ${baseUrl}`);
 
     // SINGLE comprehensive prompt - extracts AND evaluates in one shot
     const analysisPrompt = `Sei un insegnante italiano esperto di ${subject}. Analizza questa immagine di una verifica scolastica.
@@ -360,20 +365,55 @@ IMPORTANTE:
 
 Analizza ora l'immagine e rispondi SOLO con il JSON.`;
 
+    // Call API directly
+    const endpoint = `${baseUrl}/v4/chat/completions`;
+    console.log('[ANALYZE] Calling:', endpoint);
+    
+    const requestBody = {
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: analysisPrompt },
+          { type: 'image_url', image_url: { url: image } }
+        ]
+      }],
+      max_tokens: 4096
+    };
+    
+    const apiResponse = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify(requestBody)
+    });
+    
+    const responseText = await apiResponse.text();
+    console.log('[ANALYZE] API Status:', apiResponse.status);
+    console.log('[ANALYZE] API Response (first 1000 chars):', responseText.substring(0, 1000));
+    
+    if (!apiResponse.ok) {
+      return res.status(500).json({ 
+        error: `Errore API (${apiResponse.status})`,
+        details: responseText.substring(0, 500),
+        endpoint: endpoint
+      });
+    }
+    
     let response;
     try {
-      response = await callVisionAPI(image, analysisPrompt);
-    } catch (visionError) {
-      console.error('[ANALYZE] Vision error:', visionError);
+      response = JSON.parse(responseText);
+    } catch (e) {
       return res.status(500).json({ 
-        error: 'Errore nell\'analisi dell\'immagine',
-        details: visionError instanceof Error ? visionError.message : String(visionError)
+        error: 'Risposta API non valida',
+        rawResponse: responseText.substring(0, 500)
       });
     }
 
     const rawContent = response.choices?.[0]?.message?.content;
-    console.log('[ANALYZE] Raw AI response (first 1000 chars):');
-    console.log(rawContent?.substring(0, 1000));
+    console.log('[ANALYZE] Content length:', rawContent?.length || 0);
+    console.log('[ANALYZE] Content preview:', rawContent?.substring(0, 500));
     console.log('[ANALYZE] ========================================');
     
     if (!rawContent) {
