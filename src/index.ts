@@ -149,7 +149,6 @@ Se l'immagine non sembra una verifica scolastica, rispondi con un messaggio di e
           ]
         }
       ],
-      thinking: { type: 'disabled' }
     });
 
     const extractionResult = extractionResponse.choices[0]?.message?.content;
