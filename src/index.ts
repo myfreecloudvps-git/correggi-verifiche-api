@@ -286,13 +286,19 @@ Rispondi in italiano in modo dettagliato.`;
     const content = result.choices?.[0]?.message?.content;
     console.log('[TEST] Content length:', content?.length || 0);
     console.log('[TEST] Content preview:', content?.substring(0, 300));
+    console.log('[TEST] Full result:', JSON.stringify(result, null, 2));
     console.log('[TEST] ========================================');
     
     res.json({
       success: true,
       rawResponse: content,
       responseLength: content?.length || 0,
-      fullResult: result
+      // Show the FULL API response for debugging
+      fullResult: JSON.stringify(result, null, 2),
+      choicesCount: result.choices?.length || 0,
+      hasMessage: !!result.choices?.[0]?.message,
+      messageKeys: result.choices?.[0]?.message ? Object.keys(result.choices[0].message) : [],
+      usage: result.usage
     });
     
   } catch (error) {
