@@ -244,65 +244,30 @@ app.post('/api/test-vision', async (req, res) => {
 
     const endpoint = `${baseUrl}/v4/chat/completions`;
     
-    // Try multiple request formats
-    const formats = [
-      // Format 1: With model specified
-      {
-        name: 'with-model-gpt4',
-        body: {
-          model: 'gpt-4',
-          messages: [{
-            role: 'user',
-            content: 'Rispondi solo: OK'
-          }],
-          max_tokens: 10
-        }
-      },
-      // Format 2: With model gpt-4o
-      {
-        name: 'with-model-gpt4o',
-        body: {
-          model: 'gpt-4o',
-          messages: [{
-            role: 'user',
-            content: 'Rispondi solo: OK'
-          }],
-          max_tokens: 10
-        }
-      },
-      // Format 3: Without model
-      {
-        name: 'no-model',
-        body: {
-          messages: [{
-            role: 'user',
-            content: 'Rispondi solo: OK'
-          }],
-          max_tokens: 10
-        }
-      },
-      // Format 4: With image and model
-      {
-        name: 'vision-with-model',
-        body: {
-          model: 'gpt-4o',
-          messages: [{
-            role: 'user',
-            content: [
-              { type: 'text', text: 'Descrivi questa immagine' },
-              { type: 'image_url', image_url: { url: image } }
-            ]
-          }],
-          max_tokens: 100
-        }
-      }
+    // Try different model names
+    const models = [
+      'gpt-4',
+      'gpt-4o',
+      'gpt-4-turbo',
+      'gpt-3.5-turbo',
+      'gpt-3.5',
+      'claude-3-opus',
+      'claude-3-sonnet',
+      'claude-3-haiku',
+      'gemini-pro',
+      'gemini-1.5-pro',
+      'llama-3',
+      'llama-3.1-70b',
+      'qwen',
+      'qwen-max',
+      'qwen-plus',
+      'default',
+      'chat'
     ];
     
     const results = [];
     
-    for (const format of formats) {
-      console.log(`[TEST] Trying format: ${format.name}`);
-      
+    for (const model of models) {
       try {
         const response = await fetch(endpoint, {
           method: 'POST',
@@ -310,31 +275,31 @@ app.post('/api/test-vision', async (req, res) => {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${apiKey}`
           },
-          body: JSON.stringify(format.body)
+          body: JSON.stringify({
+            model: model,
+            messages: [{ role: 'user', content: 'OK' }],
+            max_tokens: 5
+          })
         });
         
         const responseText = await response.text();
         let parsed;
         try { parsed = JSON.parse(responseText); } catch { parsed = null; }
         
-        const content = parsed?.choices?.[0]?.message?.content;
+        const hasError = parsed?.error;
+        const isUnknownModel = parsed?.error?.code === '1211';
         
         results.push({
-          format: format.name,
+          model: model,
           status: response.status,
-          hasContent: !!content,
-          contentLength: content?.length || 0,
-          contentPreview: content?.substring(0, 200) || 'EMPTY',
-          isError: !response.ok,
-          // Show FULL response for debugging
-          fullResponse: responseText.substring(0, 500)
+          isUnknownModel: isUnknownModel,
+          hasContent: !!parsed?.choices?.[0]?.message?.content,
+          error: hasError ? parsed.error : null
         });
-        
-        console.log(`[TEST] ${format.name}: status=${response.status}, content=${content?.length || 0} chars`);
         
       } catch (err) {
         results.push({
-          format: format.name,
+          model: model,
           error: err instanceof Error ? err.message : String(err)
         });
       }
