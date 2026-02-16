@@ -1,7 +1,5 @@
 import express from 'express';
 import cors from 'cors';
-import fs from 'fs';
-import path from 'path';
 import ZAI from 'z-ai-web-dev-sdk';
 
 // Types
@@ -35,44 +33,6 @@ interface CorrectionResult {
   grade: string;
   questions: Question[];
   overallFeedback: string;
-}
-
-// Create ZAI config file from environment variables
-function createZaiConfig(): boolean {
-  const apiKey = process.env.ZAI_API_KEY;
-  const apiBaseUrl = process.env.ZAI_API_BASE_URL || 'https://api.z.ai';
-  
-  if (!apiKey) {
-    console.error('[CONFIG] ZAI_API_KEY non trovata nelle variabili d\'ambiente');
-    return false;
-  }
-  
-  const configPath = path.join(process.cwd(), '.z-ai-config');
-  const homeConfigPath = path.join(process.env.HOME || '/tmp', '.z-ai-config');
-  
-  const configContent = JSON.stringify({
-    apiKey: apiKey,
-    apiBaseUrl: apiBaseUrl
-  }, null, 2);
-  
-  try {
-    // Try to write in current directory
-    fs.writeFileSync(configPath, configContent);
-    console.log('[CONFIG] File .z-ai-config creato in:', configPath);
-    
-    // Also try home directory
-    try {
-      fs.writeFileSync(homeConfigPath, configContent);
-      console.log('[CONFIG] File .z-ai-config creato in:', homeConfigPath);
-    } catch (e) {
-      console.log('[CONFIG] Impossibile scrivere in home directory (non critico)');
-    }
-    
-    return true;
-  } catch (error) {
-    console.error('[CONFIG] Errore creazione file config:', error);
-    return false;
-  }
 }
 
 // Italian grade calculation
@@ -126,18 +86,31 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '50mb' }));
 
-// Initialize ZAI
+// Initialize ZAI with explicit config
 let zaiInstance: Awaited<ReturnType<typeof ZAI.create>> | null = null;
 
 async function initZAI() {
   if (!zaiInstance) {
     console.log('[INIT] Inizializzazione ZAI SDK...');
     
-    // Create config file if needed
-    createZaiConfig();
+    const apiKey = process.env.ZAI_API_KEY;
+    const apiBaseUrl = process.env.ZAI_API_BASE_URL;
+    
+    console.log('[INIT] API Key presente:', !!apiKey);
+    console.log('[INIT] API Base URL:', apiBaseUrl || 'non specificato');
     
     try {
-      zaiInstance = await ZAI.create();
+      // Pass config directly to ZAI.create() if API key is available
+      if (apiKey) {
+        // Try passing config object directly
+        zaiInstance = await ZAI.create({
+          apiKey: apiKey,
+          ...(apiBaseUrl && { apiBaseUrl: apiBaseUrl })
+        });
+      } else {
+        // Fall back to default config lookup
+        zaiInstance = await ZAI.create();
+      }
       console.log('[INIT] ZAI SDK inizializzato con successo');
     } catch (error) {
       console.error('[INIT] Errore inizializzazione ZAI SDK:', error);
@@ -152,25 +125,28 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Debug endpoint - shows environment status
+// Debug endpoint
 app.get('/debug', async (req, res) => {
-  const hasApiKey = !!process.env.ZAI_API_KEY;
-  const hasConfig = fs.existsSync(path.join(process.cwd(), '.z-ai-config'));
+  const apiKey = process.env.ZAI_API_KEY;
+  const apiBaseUrl = process.env.ZAI_API_BASE_URL;
   
   let zaiStatus = 'not_initialized';
+  let initError = null;
+  
   try {
     await initZAI();
     zaiStatus = 'initialized';
   } catch (e) {
-    zaiStatus = `error: ${e instanceof Error ? e.message : String(e)}`;
+    zaiStatus = 'error';
+    initError = e instanceof Error ? e.message : String(e);
   }
   
   res.json({ 
-    hasApiKey,
-    hasConfigFile: hasConfig,
+    hasApiKey: !!apiKey,
+    apiKeyLength: apiKey?.length || 0,
+    apiBaseUrl: apiBaseUrl || 'not set',
     zaiStatus,
-    homeDir: process.env.HOME,
-    cwd: process.cwd(),
+    initError,
     timestamp: new Date().toISOString() 
   });
 });
@@ -391,4 +367,8 @@ app.listen(PORT, () => {
   console.log(`🚀 Server avviato sulla porta ${PORT}`);
   console.log(`📍 Health: http://localhost:${PORT}/health`);
   console.log(`🔍 Debug: http://localhost:${PORT}/debug`);
+  
+  // Log environment status at startup
+  console.log(`🔑 ZAI_API_KEY presente: ${!!process.env.ZAI_API_KEY}`);
+  console.log(`🌐 ZAI_API_BASE_URL: ${process.env.ZAI_API_BASE_URL || 'non specificato'}`);
 });
