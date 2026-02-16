@@ -314,7 +314,9 @@ app.post('/api/test-vision', async (req, res) => {
           hasContent: !!content,
           contentLength: content?.length || 0,
           contentPreview: content?.substring(0, 200) || 'EMPTY',
-          isError: !response.ok
+          isError: !response.ok,
+          // Show FULL response for debugging
+          fullResponse: responseText.substring(0, 500)
         });
         
         console.log(`[TEST] ${format.name}: status=${response.status}, content=${content?.length || 0} chars`);
